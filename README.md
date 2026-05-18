@@ -29,6 +29,31 @@ cp -R skills/ultra-precise ~/.agents/skills/
 Restart or reload your agent environment if it does not discover new skills
 automatically.
 
+## Agent Install Prompt
+
+Give this prompt to an AI coding agent when you want it to install these skills
+without further human intervention:
+
+```text
+Install the reusable skills from https://github.com/MondoBoricua/agent-forge-skills
+into the local agent skills directory.
+
+Steps:
+1. Create the directory `~/.agents/skills` if it does not exist.
+2. Clone or download the repository into a temporary directory.
+3. Copy these folders into `~/.agents/skills/`:
+   - `skills/agent-handoff`
+   - `skills/challenge-plan`
+   - `skills/skill-authoring`
+   - `skills/ultra-precise`
+4. Do not overwrite an existing local skill unless its contents already match
+   this repository or you have made a timestamped backup.
+5. Do not copy `.git`, logs, dumps, datasets, reports, exports, environment
+   files, secrets, tokens, credentials, hashes, or potfiles.
+6. Verify each installed skill has a `SKILL.md` file.
+7. Report the installed paths and any skipped existing skills.
+```
+
 ## Usage
 
 Invoke skills naturally in conversation:
