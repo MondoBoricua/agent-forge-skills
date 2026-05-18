@@ -1,13 +1,15 @@
 ---
-name: grill-me
+name: challenge-plan
 description: >
   Stress-test a plan, design, architecture, repo change, or workflow by
   interviewing the user one decision at a time. Use when the user says
-  "grill me", "hazme preguntas", "stress test this", "challenge this plan",
-  "antes de implementar", or wants sharper requirements before action.
+  "challenge this plan", "challenge my plan", "question this",
+  "pressure test this", "stress test this", "hazme preguntas",
+  "cuestioname", "antes de implementar", or wants sharper requirements
+  before action.
 ---
 
-# Grill Me
+# Challenge Plan
 
 Drive the conversation toward shared understanding before implementation. Ask one
 question at a time, explain why it matters when useful, and include your

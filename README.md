@@ -10,7 +10,7 @@ generic, reusable, and free of private project context.
 
 - `agent-handoff` - Create a concise continuation brief for another agent or a
   future session.
-- `grill-me` - Stress-test a plan or design one decision at a time.
+- `challenge-plan` - Stress-test a plan or design one decision at a time.
 - `skill-authoring` - Create, review, and sanitize agent skills.
 - `ultra-precise` - Use compact, high-signal technical responses.
 
@@ -21,7 +21,7 @@ Copy the skill folders you want into your agent skills directory:
 ```bash
 mkdir -p ~/.agents/skills
 cp -R skills/agent-handoff ~/.agents/skills/
-cp -R skills/grill-me ~/.agents/skills/
+cp -R skills/challenge-plan ~/.agents/skills/
 cp -R skills/skill-authoring ~/.agents/skills/
 cp -R skills/ultra-precise ~/.agents/skills/
 ```
@@ -35,7 +35,7 @@ Invoke skills naturally in conversation:
 
 ```text
 /agent-handoff
-grill me on this plan
+challenge this plan
 use skill-authoring to draft a new skill
 modo ultra preciso
 ```
@@ -63,7 +63,7 @@ detail is ambiguous, do not include it until it has been reviewed.
 skills/
   agent-handoff/
     SKILL.md
-  grill-me/
+  challenge-plan/
     SKILL.md
   skill-authoring/
     SKILL.md
