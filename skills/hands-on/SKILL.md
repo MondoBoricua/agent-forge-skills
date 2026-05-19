@@ -1,14 +1,15 @@
 ---
-name: inicio
+name: hands-on
 description: >
   Start a coding or agent session by discovering and reading local project
-  context files before doing work. Use when the user says "/inicio",
-  "inicio", "agent start", "start session", "read project context",
-  "lee AGENTS.md", "lee CLAUDE.md", or asks the agent to orient itself before
-  planning, editing, or running commands.
+  context files before doing work. Use when the user says "/hands-on",
+  "hands on", "/inicio", "inicio", "agent start", "start session",
+  "read project context", "lee AGENTS.md", "lee CLAUDE.md",
+  "ponte en contexto", or asks the agent to orient itself before planning,
+  editing, or running commands.
 ---
 
-# Inicio
+# Hands On
 
 Orient yourself before acting. Find and read project instruction files, then
 summarize the relevant constraints and next step.
