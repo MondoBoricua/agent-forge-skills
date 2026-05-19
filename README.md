@@ -175,6 +175,54 @@ Use chrome-devtools to open http://localhost:3000, inspect console errors,
 review network requests, take a screenshot, and run a Lighthouse audit.
 ```
 
+## Optional MCP: Desktop Automation
+
+For tools that do not have Codex's bundled computer-use capability, combine:
+
+- `peekaboo` for screenshots and screen state capture.
+- `applescript` for native macOS app control through AppleScript.
+
+### opencode
+
+Add these entries to the top-level `"mcp"` object in
+`~/.config/opencode/opencode.json`:
+
+```json
+{
+  "peekaboo": {
+    "type": "local",
+    "command": ["npx", "-y", "@steipete/peekaboo-mcp"],
+    "enabled": true,
+    "timeout": 30000
+  },
+  "applescript": {
+    "type": "local",
+    "command": ["npx", "-y", "@peakmojo/applescript-mcp"],
+    "enabled": true,
+    "timeout": 30000
+  }
+}
+```
+
+### Claude Code
+
+```bash
+claude mcp add peekaboo -- npx -y @steipete/peekaboo-mcp
+claude mcp add applescript -- npx -y @peakmojo/applescript-mcp
+```
+
+### macOS Permissions
+
+Grant permissions when macOS prompts, or add the terminal/Node binary manually:
+
+- Screen Recording for screenshots.
+- Accessibility for clicks, keyboard input, and window manipulation.
+- Automation for controlling individual apps through AppleScript.
+
+Peekaboo can capture without a vision API key. Add a provider key only if you
+want built-in image analysis, and keep that key in local config or environment
+variables, not in this repository.
+
 ## Public-Safety Rules
 
 Before adding or updating a skill, remove or generalize:
