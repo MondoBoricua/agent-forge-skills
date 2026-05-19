@@ -21,7 +21,8 @@ generic, reusable, and free of private project context.
 ### Cybersecurity
 
 - `kali-mac` - Use Kali Linux tools from macOS for authorized defensive labs,
-  tool discovery, and safe learning workflows.
+  Hack The Box-style practice, tool discovery, SSH-based lab access, and safe
+  learning workflows.
 
 ## Installation
 
@@ -133,6 +134,8 @@ skills/
   cybersecurity/
     kali-mac/
       SKILL.md
+      references/
+        tool-playbook.md
 ```
 
 Keep each skill small. Add `references/`, `scripts/`, or `assets/` only when

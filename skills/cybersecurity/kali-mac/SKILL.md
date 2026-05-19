@@ -120,3 +120,9 @@ Next: [remediation/reporting step]
 - If authorization is unclear, pause and ask for scope.
 - If the request turns offensive, refuse that part and redirect to safe lab,
   defensive, or educational alternatives.
+
+## Tool Playbook
+
+For concrete Mac/Kali tool workflows, read
+`references/tool-playbook.md` only when the user asks for steps, examples,
+installed-tool usage, HTB-style lab flow, or local network practice.
