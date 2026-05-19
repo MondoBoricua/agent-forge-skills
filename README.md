@@ -18,7 +18,7 @@ generic, reusable, and free of private project context.
 
 ## Installation
 
-Copy the skill folders you want into your agent skills directory:
+Copy the skill folders you want into your Codex/agents skills directory:
 
 ```bash
 mkdir -p ~/.agents/skills
@@ -29,8 +29,19 @@ cp -R skills/skill-authoring ~/.agents/skills/
 cp -R skills/ultra-precise ~/.agents/skills/
 ```
 
-Restart or reload your agent environment if it does not discover new skills
-automatically.
+For Claude, copy the same folders into `~/.claude/skills`:
+
+```bash
+mkdir -p ~/.claude/skills
+cp -R skills/agent-handoff ~/.claude/skills/
+cp -R skills/challenge-plan ~/.claude/skills/
+cp -R skills/hands-on ~/.claude/skills/
+cp -R skills/skill-authoring ~/.claude/skills/
+cp -R skills/ultra-precise ~/.claude/skills/
+```
+
+Restart or reload your agent environment or Claude session if it does not
+discover new skills automatically.
 
 ## Agent Install Prompt
 
@@ -39,12 +50,14 @@ without further human intervention:
 
 ```text
 Install the reusable skills from https://github.com/MondoBoricua/agent-forge-skills
-into the local agent skills directory.
+into the local skills directories for Codex/agents and Claude when available.
 
 Steps:
-1. Create the directory `~/.agents/skills` if it does not exist.
+1. Create these directories if they do not exist:
+   - `~/.agents/skills`
+   - `~/.claude/skills`
 2. Clone or download the repository into a temporary directory.
-3. Copy these folders into `~/.agents/skills/`:
+3. Copy these folders into both `~/.agents/skills/` and `~/.claude/skills/`:
    - `skills/agent-handoff`
    - `skills/challenge-plan`
    - `skills/hands-on`
@@ -54,8 +67,9 @@ Steps:
    this repository or you have made a timestamped backup.
 5. Do not copy `.git`, logs, dumps, datasets, reports, exports, environment
    files, secrets, tokens, credentials, hashes, or potfiles.
-6. Verify each installed skill has a `SKILL.md` file.
-7. Report the installed paths and any skipped existing skills.
+6. If one destination is not used on this machine, skip it and say why.
+7. Verify each installed skill has a `SKILL.md` file.
+8. Report the installed paths and any skipped existing skills.
 ```
 
 ## Usage
