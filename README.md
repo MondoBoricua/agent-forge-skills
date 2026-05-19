@@ -1,7 +1,7 @@
 # Agent Forge Skills
 
-Reusable Codex and agent skills for productivity, planning, handoffs, skill
-authoring, and defensive cybersecurity workflows.
+Reusable Codex and agent skills for productivity, Apple platform development,
+planning, handoffs, skill authoring, and defensive cybersecurity workflows.
 
 This repository is designed to stay safe for public use. Skills should be
 generic, reusable, and free of private project context.
@@ -24,6 +24,15 @@ generic, reusable, and free of private project context.
   Hack The Box-style practice, tool discovery, SSH-based lab access, and safe
   learning workflows.
 
+### Apple Development
+
+- `macos-dev-pro` - Pro-level macOS development guidance for Swift, SwiftUI,
+  SwiftData, AppKit bridging, status menu apps, and system monitoring.
+- `macos-ui-pro` - Practical macOS UI/HIG guidance for app windows, menu bars,
+  popovers, toolbars, keyboard shortcuts, and monitoring utilities.
+- `swiftui-pro` - Production SwiftUI guidance for iOS/macOS, including
+  MenuBarExtra, WindowGroup, layout, performance, and trace analysis.
+
 ## Installation
 
 Copy the skill folders you want into your Codex/agents skills directory:
@@ -36,6 +45,9 @@ cp -R skills/productivity/hands-on ~/.agents/skills/
 cp -R skills/productivity/skill-authoring ~/.agents/skills/
 cp -R skills/productivity/ultra-precise ~/.agents/skills/
 cp -R skills/cybersecurity/kali-mac ~/.agents/skills/
+cp -R skills/apple-development/macos-dev-pro ~/.agents/skills/
+cp -R skills/apple-development/macos-ui-pro ~/.agents/skills/
+cp -R skills/apple-development/swiftui-pro ~/.agents/skills/
 ```
 
 For Claude, either copy the same folders into `~/.claude/skills` or symlink
@@ -49,6 +61,9 @@ ln -s ~/.agents/skills/hands-on ~/.claude/skills/hands-on
 ln -s ~/.agents/skills/skill-authoring ~/.claude/skills/skill-authoring
 ln -s ~/.agents/skills/ultra-precise ~/.claude/skills/ultra-precise
 ln -s ~/.agents/skills/kali-mac ~/.claude/skills/kali-mac
+ln -s ~/.agents/skills/macos-dev-pro ~/.claude/skills/macos-dev-pro
+ln -s ~/.agents/skills/macos-ui-pro ~/.claude/skills/macos-ui-pro
+ln -s ~/.agents/skills/swiftui-pro ~/.claude/skills/swiftui-pro
 ```
 
 Restart or reload your agent environment or Claude session if it does not
@@ -75,6 +90,9 @@ Steps:
    - `skills/productivity/skill-authoring`
    - `skills/productivity/ultra-precise`
    - `skills/cybersecurity/kali-mac`
+   - `skills/apple-development/macos-dev-pro`
+   - `skills/apple-development/macos-ui-pro`
+   - `skills/apple-development/swiftui-pro`
 4. For Claude, prefer symlinking from `~/.claude/skills/<skill-name>` to the
    matching `~/.agents/skills/<skill-name>` so both tools read the same files.
 5. Do not overwrite an existing local skill or symlink unless its contents already match
@@ -95,6 +113,7 @@ Invoke skills naturally in conversation:
 challenge this plan
 /hands-on
 kali on mac
+use macos-dev-pro for this menu bar utility
 use skill-authoring to draft a new skill
 modo ultra preciso
 ```
@@ -136,6 +155,13 @@ skills/
       SKILL.md
       references/
         tool-playbook.md
+  apple-development/
+    macos-dev-pro/
+      SKILL.md
+    macos-ui-pro/
+      SKILL.md
+    swiftui-pro/
+      SKILL.md
 ```
 
 Keep each skill small. Add `references/`, `scripts/`, or `assets/` only when
