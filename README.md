@@ -1,12 +1,14 @@
 # Agent Forge Skills
 
-Reusable Codex and agent skills for personal workflow automation, planning,
-handoffs, and skill authoring.
+Reusable Codex and agent skills for productivity, planning, handoffs, skill
+authoring, and defensive cybersecurity workflows.
 
 This repository is designed to stay safe for public use. Skills should be
 generic, reusable, and free of private project context.
 
 ## Skills
+
+### Productivity
 
 - `agent-handoff` - Create a concise continuation brief for another agent or a
   future session.
@@ -16,28 +18,36 @@ generic, reusable, and free of private project context.
 - `skill-authoring` - Create, review, and sanitize agent skills.
 - `ultra-precise` - Use compact, high-signal technical responses.
 
+### Cybersecurity
+
+- `kali-mac` - Use Kali Linux tools from macOS for authorized defensive labs,
+  tool discovery, and safe learning workflows.
+
 ## Installation
 
 Copy the skill folders you want into your Codex/agents skills directory:
 
 ```bash
 mkdir -p ~/.agents/skills
-cp -R skills/agent-handoff ~/.agents/skills/
-cp -R skills/challenge-plan ~/.agents/skills/
-cp -R skills/hands-on ~/.agents/skills/
-cp -R skills/skill-authoring ~/.agents/skills/
-cp -R skills/ultra-precise ~/.agents/skills/
+cp -R skills/productivity/agent-handoff ~/.agents/skills/
+cp -R skills/productivity/challenge-plan ~/.agents/skills/
+cp -R skills/productivity/hands-on ~/.agents/skills/
+cp -R skills/productivity/skill-authoring ~/.agents/skills/
+cp -R skills/productivity/ultra-precise ~/.agents/skills/
+cp -R skills/cybersecurity/kali-mac ~/.agents/skills/
 ```
 
-For Claude, copy the same folders into `~/.claude/skills`:
+For Claude, either copy the same folders into `~/.claude/skills` or symlink
+them to the Codex/agents install so both tools read the same skill files:
 
 ```bash
 mkdir -p ~/.claude/skills
-cp -R skills/agent-handoff ~/.claude/skills/
-cp -R skills/challenge-plan ~/.claude/skills/
-cp -R skills/hands-on ~/.claude/skills/
-cp -R skills/skill-authoring ~/.claude/skills/
-cp -R skills/ultra-precise ~/.claude/skills/
+ln -s ~/.agents/skills/agent-handoff ~/.claude/skills/agent-handoff
+ln -s ~/.agents/skills/challenge-plan ~/.claude/skills/challenge-plan
+ln -s ~/.agents/skills/hands-on ~/.claude/skills/hands-on
+ln -s ~/.agents/skills/skill-authoring ~/.claude/skills/skill-authoring
+ln -s ~/.agents/skills/ultra-precise ~/.claude/skills/ultra-precise
+ln -s ~/.agents/skills/kali-mac ~/.claude/skills/kali-mac
 ```
 
 Restart or reload your agent environment or Claude session if it does not
@@ -57,19 +67,22 @@ Steps:
    - `~/.agents/skills`
    - `~/.claude/skills`
 2. Clone or download the repository into a temporary directory.
-3. Copy these folders into both `~/.agents/skills/` and `~/.claude/skills/`:
-   - `skills/agent-handoff`
-   - `skills/challenge-plan`
-   - `skills/hands-on`
-   - `skills/skill-authoring`
-   - `skills/ultra-precise`
-4. Do not overwrite an existing local skill unless its contents already match
+3. Copy these folders into `~/.agents/skills/`:
+   - `skills/productivity/agent-handoff`
+   - `skills/productivity/challenge-plan`
+   - `skills/productivity/hands-on`
+   - `skills/productivity/skill-authoring`
+   - `skills/productivity/ultra-precise`
+   - `skills/cybersecurity/kali-mac`
+4. For Claude, prefer symlinking from `~/.claude/skills/<skill-name>` to the
+   matching `~/.agents/skills/<skill-name>` so both tools read the same files.
+5. Do not overwrite an existing local skill or symlink unless its contents already match
    this repository or you have made a timestamped backup.
-5. Do not copy `.git`, logs, dumps, datasets, reports, exports, environment
+6. Do not copy `.git`, logs, dumps, datasets, reports, exports, environment
    files, secrets, tokens, credentials, hashes, or potfiles.
-6. If one destination is not used on this machine, skip it and say why.
-7. Verify each installed skill has a `SKILL.md` file.
-8. Report the installed paths and any skipped existing skills.
+7. If one destination is not used on this machine, skip it and say why.
+8. Verify each installed skill has a `SKILL.md` file.
+9. Report the installed paths, symlink targets, and any skipped existing skills.
 ```
 
 ## Usage
@@ -80,6 +93,7 @@ Invoke skills naturally in conversation:
 /agent-handoff
 challenge this plan
 /hands-on
+kali on mac
 use skill-authoring to draft a new skill
 modo ultra preciso
 ```
@@ -105,16 +119,20 @@ detail is ambiguous, do not include it until it has been reviewed.
 
 ```text
 skills/
-  agent-handoff/
-    SKILL.md
-  challenge-plan/
-    SKILL.md
-  hands-on/
-    SKILL.md
-  skill-authoring/
-    SKILL.md
-  ultra-precise/
-    SKILL.md
+  productivity/
+    agent-handoff/
+      SKILL.md
+    challenge-plan/
+      SKILL.md
+    hands-on/
+      SKILL.md
+    skill-authoring/
+      SKILL.md
+    ultra-precise/
+      SKILL.md
+  cybersecurity/
+    kali-mac/
+      SKILL.md
 ```
 
 Keep each skill small. Add `references/`, `scripts/`, or `assets/` only when
