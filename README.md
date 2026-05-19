@@ -132,6 +132,24 @@ claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest
 claude mcp get chrome-devtools
 ```
 
+### Codex CLI
+
+Codex CLI supports MCP servers through `codex mcp` and stores them in
+`~/.codex/config.toml`.
+
+```bash
+codex mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest
+codex mcp get chrome-devtools
+```
+
+Equivalent TOML:
+
+```toml
+[mcp_servers.chrome-devtools]
+command = "npx"
+args = ["-y", "chrome-devtools-mcp@latest"]
+```
+
 ### opencode
 
 Add this to the top-level `"mcp"` object in `~/.config/opencode/opencode.json`:
