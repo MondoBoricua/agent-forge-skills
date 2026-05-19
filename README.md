@@ -11,6 +11,8 @@ generic, reusable, and free of private project context.
 - `agent-handoff` - Create a concise continuation brief for another agent or a
   future session.
 - `challenge-plan` - Stress-test a plan or design one decision at a time.
+- `inicio` - Discover and read local `AGENTS.md` or `CLAUDE.md` context before
+  starting work.
 - `skill-authoring` - Create, review, and sanitize agent skills.
 - `ultra-precise` - Use compact, high-signal technical responses.
 
@@ -22,6 +24,7 @@ Copy the skill folders you want into your agent skills directory:
 mkdir -p ~/.agents/skills
 cp -R skills/agent-handoff ~/.agents/skills/
 cp -R skills/challenge-plan ~/.agents/skills/
+cp -R skills/inicio ~/.agents/skills/
 cp -R skills/skill-authoring ~/.agents/skills/
 cp -R skills/ultra-precise ~/.agents/skills/
 ```
@@ -44,6 +47,7 @@ Steps:
 3. Copy these folders into `~/.agents/skills/`:
    - `skills/agent-handoff`
    - `skills/challenge-plan`
+   - `skills/inicio`
    - `skills/skill-authoring`
    - `skills/ultra-precise`
 4. Do not overwrite an existing local skill unless its contents already match
@@ -61,6 +65,7 @@ Invoke skills naturally in conversation:
 ```text
 /agent-handoff
 challenge this plan
+/inicio
 use skill-authoring to draft a new skill
 modo ultra preciso
 ```
@@ -89,6 +94,8 @@ skills/
   agent-handoff/
     SKILL.md
   challenge-plan/
+    SKILL.md
+  inicio/
     SKILL.md
   skill-authoring/
     SKILL.md
