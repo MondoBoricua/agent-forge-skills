@@ -120,6 +120,43 @@ modo ultra preciso
 
 Each skill includes trigger language in its `description` frontmatter.
 
+## Optional MCP: Chrome DevTools
+
+For browser inspection, screenshots, console logs, network requests, performance
+traces, and Lighthouse audits, install Google's Chrome DevTools MCP server.
+
+### Claude Code
+
+```bash
+claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest
+claude mcp get chrome-devtools
+```
+
+### opencode
+
+Add this to the top-level `"mcp"` object in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "chrome-devtools": {
+    "type": "local",
+    "command": ["npx", "-y", "chrome-devtools-mcp@latest"],
+    "enabled": true,
+    "timeout": 15000
+  }
+}
+```
+
+If the file already has other MCP servers, merge only the `chrome-devtools`
+entry into the existing `"mcp"` object.
+
+Example prompt:
+
+```text
+Use chrome-devtools to open http://localhost:3000, inspect console errors,
+review network requests, take a screenshot, and run a Lighthouse audit.
+```
+
 ## Public-Safety Rules
 
 Before adding or updating a skill, remove or generalize:
