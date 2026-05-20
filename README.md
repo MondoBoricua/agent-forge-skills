@@ -223,6 +223,70 @@ Peekaboo can capture without a vision API key. Add a provider key only if you
 want built-in image analysis, and keep that key in local config or environment
 variables, not in this repository.
 
+## Optional opencode: Manual Ollama Models
+
+opencode can use Ollama through an OpenAI-compatible provider. If model
+autodiscovery is not available for your setup, add the models manually in
+`~/.config/opencode/opencode.json`.
+
+Use generic model ids and provider names in shared documentation. Keep private
+hostnames, internal IPs, usernames, and API keys out of public repositories.
+
+Example provider entry:
+
+```json
+{
+  "provider": {
+    "ollama-remote": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama Remote",
+      "options": {
+        "baseURL": "https://example-ollama-host/v1",
+        "apiKey": "{file:~/.config/opencode/secrets/ollama-api-key}"
+      },
+      "models": {
+        "qwen2.5-coder:32b": {
+          "name": "Qwen 2.5 Coder 32B"
+        },
+        "qwen2.5-coder-32b-32k:latest": {
+          "name": "Qwen 2.5 Coder 32B 32k"
+        },
+        "codestral:latest": {
+          "name": "Codestral"
+        }
+      }
+    }
+  }
+}
+```
+
+If your Ollama endpoint does not require authentication, omit the `apiKey`
+field. If it does require authentication, prefer a local secret file instead of
+placing the key directly in `opencode.json`:
+
+```bash
+mkdir -p ~/.config/opencode/secrets
+chmod 700 ~/.config/opencode/secrets
+printf '%s' 'replace-with-your-api-key' > ~/.config/opencode/secrets/ollama-api-key
+chmod 600 ~/.config/opencode/secrets/ollama-api-key
+```
+
+Then reference it from `opencode.json`:
+
+```json
+"apiKey": "{file:~/.config/opencode/secrets/ollama-api-key}"
+```
+
+To choose manual model ids, list the models on the Ollama machine:
+
+```bash
+ollama list
+```
+
+Use the exact model name from `ollama list` as the key under `"models"`. For
+agent workflows, prefer variants with larger context windows when your Ollama
+server has them configured.
+
 ## Public-Safety Rules
 
 Before adding or updating a skill, remove or generalize:
