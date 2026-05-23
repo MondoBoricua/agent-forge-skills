@@ -13,6 +13,9 @@ generic, reusable, and free of private project context.
 - `agent-handoff` - Create a concise continuation brief for another agent or a
   future session.
 - `challenge-plan` - Stress-test a plan or design one decision at a time.
+- `Gemini_WaterMark_Removal` - Remove visible Gemini-style watermarks from
+  authorized local image frames using the purpose-built remover first, then
+  measured inpaint fallbacks when scaled video frames defeat catalog detection.
 - `hands-on` - Discover and read local `AGENTS.md` or `CLAUDE.md` context before
   starting work.
 - `skill-authoring` - Create, review, and sanitize agent skills.
@@ -41,6 +44,7 @@ Copy the skill folders you want into your Codex/agents skills directory:
 mkdir -p ~/.agents/skills
 cp -R skills/productivity/agent-handoff ~/.agents/skills/
 cp -R skills/productivity/challenge-plan ~/.agents/skills/
+cp -R skills/productivity/Gemini_WaterMark_Removal ~/.agents/skills/
 cp -R skills/productivity/hands-on ~/.agents/skills/
 cp -R skills/productivity/skill-authoring ~/.agents/skills/
 cp -R skills/productivity/ultra-precise ~/.agents/skills/
@@ -57,6 +61,7 @@ them to the Codex/agents install so both tools read the same skill files:
 mkdir -p ~/.claude/skills
 ln -s ~/.agents/skills/agent-handoff ~/.claude/skills/agent-handoff
 ln -s ~/.agents/skills/challenge-plan ~/.claude/skills/challenge-plan
+ln -s ~/.agents/skills/Gemini_WaterMark_Removal ~/.claude/skills/Gemini_WaterMark_Removal
 ln -s ~/.agents/skills/hands-on ~/.claude/skills/hands-on
 ln -s ~/.agents/skills/skill-authoring ~/.claude/skills/skill-authoring
 ln -s ~/.agents/skills/ultra-precise ~/.claude/skills/ultra-precise
@@ -86,6 +91,7 @@ Steps:
 3. Copy these folders into `~/.agents/skills/`:
    - `skills/productivity/agent-handoff`
    - `skills/productivity/challenge-plan`
+   - `skills/productivity/Gemini_WaterMark_Removal`
    - `skills/productivity/hands-on`
    - `skills/productivity/skill-authoring`
    - `skills/productivity/ultra-precise`
@@ -111,6 +117,7 @@ Invoke skills naturally in conversation:
 ```text
 /agent-handoff
 challenge this plan
+Gemini_WaterMark_Removal
 /hands-on
 kali on mac
 use macos-dev-pro for this menu bar utility
@@ -310,6 +317,8 @@ skills/
     agent-handoff/
       SKILL.md
     challenge-plan/
+      SKILL.md
+    Gemini_WaterMark_Removal/
       SKILL.md
     hands-on/
       SKILL.md
