@@ -21,6 +21,12 @@ generic, reusable, and free of private project context.
 - `skill-authoring` - Create, review, and sanitize agent skills.
 - `ultra-precise` - Use compact, high-signal technical responses.
 
+### Design Assets
+
+- `logo-forge` - Find, fetch, validate, and adapt brand SVG logos and wordmarks
+  from SVGL and similar public logo sources for authorized UI, docs, decks, and
+  app projects.
+
 ### Cybersecurity
 
 - `kali-mac` - Use Kali Linux tools from macOS for authorized defensive labs,
@@ -48,6 +54,7 @@ cp -R skills/productivity/Gemini_WaterMark_Removal ~/.agents/skills/
 cp -R skills/productivity/hands-on ~/.agents/skills/
 cp -R skills/productivity/skill-authoring ~/.agents/skills/
 cp -R skills/productivity/ultra-precise ~/.agents/skills/
+cp -R skills/design-assets/logo-forge ~/.agents/skills/
 cp -R skills/cybersecurity/kali-mac ~/.agents/skills/
 cp -R skills/apple-development/macos-dev-pro ~/.agents/skills/
 cp -R skills/apple-development/macos-ui-pro ~/.agents/skills/
@@ -65,6 +72,7 @@ ln -s ~/.agents/skills/Gemini_WaterMark_Removal ~/.claude/skills/Gemini_WaterMar
 ln -s ~/.agents/skills/hands-on ~/.claude/skills/hands-on
 ln -s ~/.agents/skills/skill-authoring ~/.claude/skills/skill-authoring
 ln -s ~/.agents/skills/ultra-precise ~/.claude/skills/ultra-precise
+ln -s ~/.agents/skills/logo-forge ~/.claude/skills/logo-forge
 ln -s ~/.agents/skills/kali-mac ~/.claude/skills/kali-mac
 ln -s ~/.agents/skills/macos-dev-pro ~/.claude/skills/macos-dev-pro
 ln -s ~/.agents/skills/macos-ui-pro ~/.claude/skills/macos-ui-pro
@@ -73,6 +81,15 @@ ln -s ~/.agents/skills/swiftui-pro ~/.claude/skills/swiftui-pro
 
 Restart or reload your agent environment or Claude session if it does not
 discover new skills automatically.
+
+For Gemini and Antigravity CLI, symlink the same installed folders into the
+global Gemini skill directories:
+
+```bash
+mkdir -p ~/.gemini/skills ~/.gemini/antigravity-cli/skills
+ln -s ~/.agents/skills/logo-forge ~/.gemini/skills/logo-forge
+ln -s ~/.agents/skills/logo-forge ~/.gemini/antigravity-cli/skills/logo-forge
+```
 
 ## Agent Install Prompt
 
@@ -95,6 +112,7 @@ Steps:
    - `skills/productivity/hands-on`
    - `skills/productivity/skill-authoring`
    - `skills/productivity/ultra-precise`
+   - `skills/design-assets/logo-forge`
    - `skills/cybersecurity/kali-mac`
    - `skills/apple-development/macos-dev-pro`
    - `skills/apple-development/macos-ui-pro`
@@ -122,6 +140,7 @@ Gemini_WaterMark_Removal
 kali on mac
 use macos-dev-pro for this menu bar utility
 use skill-authoring to draft a new skill
+use logo-forge to fetch the Vercel logo
 modo ultra preciso
 ```
 
@@ -331,6 +350,11 @@ skills/
       SKILL.md
       references/
         tool-playbook.md
+  design-assets/
+    logo-forge/
+      SKILL.md
+      scripts/
+        fetch-logo.mjs
   apple-development/
     macos-dev-pro/
       SKILL.md
