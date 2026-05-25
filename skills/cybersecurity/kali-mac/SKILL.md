@@ -4,7 +4,8 @@ description: >
   Help use Kali Linux tools from a Mac for authorized, defensive security
   learning and lab work. Use when the user asks about Kali on macOS, Kali VMs,
   Kali containers, local lab tooling, tool selection, safe command discovery,
-  or how to choose and learn Kali apps without targeting third-party systems.
+  quick IP/ASN context, or how to choose and learn Kali apps without targeting
+  third-party systems.
 ---
 
 # Kali Mac
@@ -72,6 +73,32 @@ which ssh docker podman colima multipass utm 2>/dev/null
 
 If the user has a known local alias or wrapper, ask before relying on it unless
 the current context already defines it.
+
+## Quick IP Context
+
+When the user asks where an IP is from, who owns an IP, or what network/ASN an
+address belongs to, use `ip.guide` for quick passive enrichment. It requires no
+API key and returns JSON for the caller IP, a specific IP, a CIDR block, or an
+ASN.
+
+```bash
+curl -sL https://ip.guide | jq .
+curl -sL https://ip.guide/8.8.8.8 | jq .
+curl -sL https://ip.guide/8.8.8.0/24 | jq .
+curl -sL https://ip.guide/as15169 | jq '.asn, .organization, .country, .routes.v4[:10]'
+```
+
+Read the output as context, not proof of physical location:
+
+- `location` is approximate geolocation and may point to a provider or routing
+  region.
+- `network.cidr` shows the announced/known network that contains the IP.
+- `network.autonomous_system` identifies ASN, organization, country, and RIR.
+- ASN lookups can return very large route lists; summarize only the relevant
+  ranges.
+
+Use this for triage, reporting, VPN/egress checks, and asset attribution. Do not
+turn passive IP context into public-target attack steps.
 
 ## Tool Areas
 
