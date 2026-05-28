@@ -13,6 +13,8 @@ generic, reusable, and free of private project context.
 - `agent-handoff` - Create a concise continuation brief for another agent or a
   future session.
 - `challenge-plan` - Stress-test a plan or design one decision at a time.
+- `diagnose` - Debug hard bugs and performance regressions with a disciplined
+  reproduce, hypothesize, instrument, fix, and regression-test loop.
 - `Gemini_WaterMark_Removal` - Remove visible Gemini-style watermarks from
   authorized local image frames using the purpose-built remover first, then
   measured inpaint fallbacks when scaled video frames defeat catalog detection.
@@ -50,6 +52,7 @@ Copy the skill folders you want into your Codex/agents skills directory:
 mkdir -p ~/.agents/skills
 cp -R skills/productivity/agent-handoff ~/.agents/skills/
 cp -R skills/productivity/challenge-plan ~/.agents/skills/
+cp -R skills/productivity/diagnose ~/.agents/skills/
 cp -R skills/productivity/Gemini_WaterMark_Removal ~/.agents/skills/
 cp -R skills/productivity/hands-on ~/.agents/skills/
 cp -R skills/productivity/skill-authoring ~/.agents/skills/
@@ -68,6 +71,7 @@ them to the Codex/agents install so both tools read the same skill files:
 mkdir -p ~/.claude/skills
 ln -s ~/.agents/skills/agent-handoff ~/.claude/skills/agent-handoff
 ln -s ~/.agents/skills/challenge-plan ~/.claude/skills/challenge-plan
+ln -s ~/.agents/skills/diagnose ~/.claude/skills/diagnose
 ln -s ~/.agents/skills/Gemini_WaterMark_Removal ~/.claude/skills/Gemini_WaterMark_Removal
 ln -s ~/.agents/skills/hands-on ~/.claude/skills/hands-on
 ln -s ~/.agents/skills/skill-authoring ~/.claude/skills/skill-authoring
@@ -87,6 +91,8 @@ global Gemini skill directories:
 
 ```bash
 mkdir -p ~/.gemini/skills ~/.gemini/antigravity-cli/skills
+ln -s ~/.agents/skills/diagnose ~/.gemini/skills/diagnose
+ln -s ~/.agents/skills/diagnose ~/.gemini/antigravity-cli/skills/diagnose
 ln -s ~/.agents/skills/logo-forge ~/.gemini/skills/logo-forge
 ln -s ~/.agents/skills/logo-forge ~/.gemini/antigravity-cli/skills/logo-forge
 ```
@@ -98,16 +104,20 @@ without further human intervention:
 
 ```text
 Install the reusable skills from https://github.com/MondoBoricua/agent-forge-skills
-into the local skills directories for Codex/agents and Claude when available.
+into the local skills directories for Codex/agents, Claude, and Gemini when
+available.
 
 Steps:
 1. Create these directories if they do not exist:
    - `~/.agents/skills`
    - `~/.claude/skills`
+   - `~/.gemini/skills`
+   - `~/.gemini/antigravity-cli/skills`
 2. Clone or download the repository into a temporary directory.
 3. Copy these folders into `~/.agents/skills/`:
    - `skills/productivity/agent-handoff`
    - `skills/productivity/challenge-plan`
+   - `skills/productivity/diagnose`
    - `skills/productivity/Gemini_WaterMark_Removal`
    - `skills/productivity/hands-on`
    - `skills/productivity/skill-authoring`
@@ -119,13 +129,17 @@ Steps:
    - `skills/apple-development/swiftui-pro`
 4. For Claude, prefer symlinking from `~/.claude/skills/<skill-name>` to the
    matching `~/.agents/skills/<skill-name>` so both tools read the same files.
-5. Do not overwrite an existing local skill or symlink unless its contents already match
+5. For Gemini and Antigravity CLI, prefer symlinking from
+   `~/.gemini/skills/<skill-name>` and
+   `~/.gemini/antigravity-cli/skills/<skill-name>` to the matching
+   `~/.agents/skills/<skill-name>`.
+6. Do not overwrite an existing local skill or symlink unless its contents already match
    this repository or you have made a timestamped backup.
-6. Do not copy `.git`, logs, dumps, datasets, reports, exports, environment
+7. Do not copy `.git`, logs, dumps, datasets, reports, exports, environment
    files, secrets, tokens, credentials, hashes, or potfiles.
-7. If one destination is not used on this machine, skip it and say why.
-8. Verify each installed skill has a `SKILL.md` file.
-9. Report the installed paths, symlink targets, and any skipped existing skills.
+8. If one destination is not used on this machine, skip it and say why.
+9. Verify each installed skill has a `SKILL.md` file.
+10. Report the installed paths, symlink targets, and any skipped existing skills.
 ```
 
 ## Usage
@@ -135,6 +149,7 @@ Invoke skills naturally in conversation:
 ```text
 /agent-handoff
 challenge this plan
+diagnose this bug
 Gemini_WaterMark_Removal
 /hands-on
 kali on mac
@@ -337,6 +352,10 @@ skills/
       SKILL.md
     challenge-plan/
       SKILL.md
+    diagnose/
+      SKILL.md
+      scripts/
+        hitl-loop.template.sh
     Gemini_WaterMark_Removal/
       SKILL.md
     hands-on/
