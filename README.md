@@ -64,38 +64,35 @@ cp -R skills/apple-development/macos-ui-pro ~/.agents/skills/
 cp -R skills/apple-development/swiftui-pro ~/.agents/skills/
 ```
 
-For Claude, either copy the same folders into `~/.claude/skills` or symlink
-them to the Codex/agents install so both tools read the same skill files:
+That single `~/.agents/skills` install is read directly by **Codex, OpenCode,
+Cursor, and Gemini CLI** — no extra per-tool copies are needed for them (see
+[Where each agent reads skills](#where-each-agent-reads-skills)).
+
+**Claude Code** does not read `~/.agents/skills`, so give it its own copy.
+Prefer real copies over symlinks, since Claude's docs do not guarantee symlink
+discovery:
 
 ```bash
 mkdir -p ~/.claude/skills
-ln -s ~/.agents/skills/agent-handoff ~/.claude/skills/agent-handoff
-ln -s ~/.agents/skills/challenge-plan ~/.claude/skills/challenge-plan
-ln -s ~/.agents/skills/diagnose ~/.claude/skills/diagnose
-ln -s ~/.agents/skills/Gemini_WaterMark_Removal ~/.claude/skills/Gemini_WaterMark_Removal
-ln -s ~/.agents/skills/hands-on ~/.claude/skills/hands-on
-ln -s ~/.agents/skills/skill-authoring ~/.claude/skills/skill-authoring
-ln -s ~/.agents/skills/ultra-precise ~/.claude/skills/ultra-precise
-ln -s ~/.agents/skills/logo-forge ~/.claude/skills/logo-forge
-ln -s ~/.agents/skills/kali-mac ~/.claude/skills/kali-mac
-ln -s ~/.agents/skills/macos-dev-pro ~/.claude/skills/macos-dev-pro
-ln -s ~/.agents/skills/macos-ui-pro ~/.claude/skills/macos-ui-pro
-ln -s ~/.agents/skills/swiftui-pro ~/.claude/skills/swiftui-pro
+cp -R ~/.agents/skills/agent-handoff ~/.claude/skills/
+cp -R ~/.agents/skills/diagnose ~/.claude/skills/
+cp -R ~/.agents/skills/logo-forge ~/.claude/skills/
+# ...repeat for each skill you want available in Claude Code
 ```
 
 Restart or reload your agent environment or Claude session if it does not
-discover new skills automatically.
+discover new skills automatically. Claude watches `~/.claude/skills` live, so
+new skills usually appear without a restart; creating the top-level directory
+for the first time does require a restart.
 
-For Gemini and Antigravity CLI, symlink the same installed folders into the
-global Gemini skill directories:
+**Antigravity** reads different directories than the Gemini CLI:
 
-```bash
-mkdir -p ~/.gemini/skills ~/.gemini/antigravity-cli/skills
-ln -s ~/.agents/skills/diagnose ~/.gemini/skills/diagnose
-ln -s ~/.agents/skills/diagnose ~/.gemini/antigravity-cli/skills/diagnose
-ln -s ~/.agents/skills/logo-forge ~/.gemini/skills/logo-forge
-ln -s ~/.agents/skills/logo-forge ~/.gemini/antigravity-cli/skills/logo-forge
-```
+- Antigravity IDE (global): `~/.gemini/config/skills` — often a deliberately
+  curated subset, so add only the skills you want there.
+- Antigravity CLI: `~/.gemini/antigravity-cli/skills`.
+
+Gemini CLI itself already reads `~/.agents/skills` (its `.agents` alias takes
+precedence over `~/.gemini/skills`), so it needs no separate copy.
 
 ## Agent Install Prompt
 
@@ -108,11 +105,9 @@ into the local skills directories for Codex/agents, Claude, and Gemini when
 available.
 
 Steps:
-1. Create these directories if they do not exist:
-   - `~/.agents/skills`
-   - `~/.claude/skills`
-   - `~/.gemini/skills`
-   - `~/.gemini/antigravity-cli/skills`
+1. Create `~/.agents/skills` if it does not exist. This is the cross-tool home
+   read directly by Codex, OpenCode, Cursor, and Gemini CLI. Also create
+   `~/.claude/skills` if you use Claude Code (it does not read `~/.agents`).
 2. Clone or download the repository into a temporary directory.
 3. Copy these folders into `~/.agents/skills/`:
    - `skills/productivity/agent-handoff`
@@ -127,13 +122,14 @@ Steps:
    - `skills/apple-development/macos-dev-pro`
    - `skills/apple-development/macos-ui-pro`
    - `skills/apple-development/swiftui-pro`
-4. For Claude, prefer symlinking from `~/.claude/skills/<skill-name>` to the
-   matching `~/.agents/skills/<skill-name>` so both tools read the same files.
-5. For Gemini and Antigravity CLI, prefer symlinking from
-   `~/.gemini/skills/<skill-name>` and
-   `~/.gemini/antigravity-cli/skills/<skill-name>` to the matching
-   `~/.agents/skills/<skill-name>`.
-6. Do not overwrite an existing local skill or symlink unless its contents already match
+4. For Claude Code, copy each folder into `~/.claude/skills/<skill-name>` (real
+   copies, not symlinks — Claude's docs do not guarantee symlink discovery).
+   Claude does not read `~/.agents/skills`.
+5. Codex, OpenCode, Cursor, and Gemini CLI read `~/.agents/skills` directly, so
+   no further action is needed for them. Only if the user specifically uses
+   Antigravity, copy the wanted skills into `~/.gemini/config/skills` (IDE,
+   usually a curated subset) and/or `~/.gemini/antigravity-cli/skills` (CLI).
+6. Do not overwrite an existing local skill unless its contents already match
    this repository or you have made a timestamped backup.
 7. Do not copy `.git`, logs, dumps, datasets, reports, exports, environment
    files, secrets, tokens, credentials, hashes, or potfiles.
@@ -160,6 +156,47 @@ modo ultra preciso
 ```
 
 Each skill includes trigger language in its `description` frontmatter.
+
+## Where each agent reads skills
+
+Skills follow the [Agent Skills](https://agentskills.io) open standard, so most
+tools share one location. The cross-tool home is `~/.agents/skills/`. The table
+below maps each agent's actual skill directories, verified against current
+official docs.
+
+| Agent | Global skill directories it reads | Reads `~/.agents/skills` directly? |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills` | No |
+| Codex | `~/.agents/skills`, `/etc/codex/skills` | Yes |
+| OpenCode | `~/.config/opencode/skills`, `~/.claude/skills`, `~/.agents/skills` | Yes |
+| Cursor | `~/.cursor/skills`, `~/.agents/skills` (+ compat `~/.claude/skills`, `~/.codex/skills`) | Yes |
+| Gemini CLI | `~/.gemini/skills`, `~/.agents/skills` (the `.agents` alias wins) | Yes |
+| Antigravity (IDE) | `~/.gemini/config/skills` (global); `.agents/skills` then `.agent/skills` (workspace) | Workspace only |
+| Antigravity (CLI) | `~/.gemini/antigravity-cli/skills` | — |
+
+Key takeaways:
+
+- **`~/.agents/skills` is read directly by Codex, OpenCode, Cursor, and Gemini
+  CLI.** Install a skill there once and those four pick it up. Project-level
+  `.agents/skills/` works the same way per repository.
+- **Claude Code is the exception** — it only reads `~/.claude/skills`, never
+  `~/.agents/skills`. It needs its own copy.
+- **The command name comes from a different place per tool.** Claude derives the
+  `/command` from the *folder name*; Codex, Cursor, and Gemini derive it from the
+  frontmatter `name`. Keep the folder name equal to `name` so the command is the
+  same everywhere.
+- **`name` is required by Codex, OpenCode, and Cursor** (optional in Claude and
+  Antigravity). Always include both `name` and `description` so a skill loads in
+  every tool.
+- Codex's docs state it follows symlinked skill folders; Claude's docs do not
+  guarantee symlink discovery, so prefer real copies for `~/.claude/skills`.
+
+Sources: [Claude Code](https://code.claude.com/docs/en/skills) ·
+[Codex](https://developers.openai.com/codex/skills) ·
+[OpenCode](https://opencode.ai/docs/skills/) ·
+[Cursor](https://cursor.com/docs/skills) ·
+[Gemini CLI](https://geminicli.com/docs/cli/skills/) ·
+[Antigravity](https://antigravity.google/docs/skills)
 
 ## Optional MCP: Chrome DevTools
 
