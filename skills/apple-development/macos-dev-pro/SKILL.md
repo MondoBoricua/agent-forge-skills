@@ -53,7 +53,9 @@ macOS 26 specific features.
 ### macos-capabilities/
 Platform integration.
 - `sandboxing.md` - App Sandbox and entitlements
-- `system-monitoring.md` - CPU/GPU/RAM/disk/power metrics, Process pitfalls, and utility app patterns
+- `menubar.md` - MenuBarExtra/NSStatusItem, status utility lifecycle, single-window accessory apps, Dock hiding
+- `system-monitoring.md` - CPU/GPU/RAM/disk/network/battery/sensor APIs, Process pitfalls, reader architecture, and utility app patterns
+- `display-management.md` - Display discovery, brightness, resolution changes, Sidecar/AirPlay quirks, and display enable/disable tradeoffs
 - System integration features
 
 ### appkit-swiftui-bridge/

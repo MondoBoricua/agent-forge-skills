@@ -169,6 +169,43 @@ When a `.window` menu extra shows live status:
 - Use manual refresh plus a conservative timer for menu summaries.
 - Verify SF Symbol availability on the deployment target. Newer symbols can render blank; prefer stable fallbacks such as `display`, `cpu.fill`, `memorychip.fill`, and `internaldrive.fill`.
 
+### Compact menu bar labels
+
+Do not rely on pure SwiftUI multiline labels for the visible `MenuBarExtra`
+status item. Labels such as `Text("SSD\n87%")` can have the correct text but
+still be clipped by macOS because the status item is laid out inside the real
+menu bar height, not a normal SwiftUI stack.
+
+For compact two-line metrics, render the label into a fixed-height `NSImage`
+and use `Image(nsImage:)` as the `MenuBarExtra` label. Keep the image around
+22pt high, draw the title and value manually with AppKit/Core Graphics, use
+monospaced digits for changing numbers, and apply threshold colors while
+drawing. This gives macOS one complete image instead of asking it to relayout
+two SwiftUI text lines inside the menu bar.
+
+```swift
+MenuBarExtra {
+    MetricsMenu()
+} label: {
+    Image(nsImage: MetricMenuBarImage.render(title: "SSD", value: "87%", color: .systemGreen))
+        .accessibilityLabel("SSD 87 percent")
+}
+```
+
+If the visible menu bar surface contains multiple live widgets, tiny charts, or
+user-reorderable metric groups, prefer an AppKit `NSStatusItem` with custom
+`NSView` subviews instead of forcing everything through `MenuBarExtra`. Let
+SwiftUI own the popover/window content, while AppKit owns the status item pixels,
+hit testing, width calculation, and preserved menu bar position.
+
+Secondary guidelines for short single-line status strings:
+
+- If you keep a SwiftUI `Text` label, use one `Text` containing both title and value rather than splitting the value into multiple child views, which macOS can collapse to show only the title.
+- Use `.fixedSize()` for short status strings that should not wrap or compress.
+- Keep labels short enough for menu bar crowding.
+- Put richer detail in the menu/popover content, not the always-visible label.
+- If several extras share a timer-backed model, ensure `startPolling` is idempotent and preserves the fastest active interval.
+
 ---
 
 ## WindowGroup (macOS behavior)
@@ -371,6 +408,7 @@ struct MyApp: App {
 
 - **Use `Settings`** for preferences — prefer this over a custom preferences window
 - **Use `MenuBarExtra`** for menu bar items — prefer this over managing AppKit's `NSStatusItem` directly
+- **Use image-rendered labels** for compact multiline status metrics — SwiftUI text labels can clip in the menu bar
 - **Use `WindowGroup`** as the primary scene — reserve `Window` for supplementary singletons
 - **Use `UtilityWindow`** for inspectors/palettes — it handles floating, focus, and visibility automatically
 - **Use `DocumentGroup`** for document-based apps — it provides the full File menu and document lifecycle

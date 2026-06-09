@@ -120,6 +120,63 @@ Update the menu bar icon based on state:
 MenuBarExtra("Status", systemImage: appState.statusIcon) { ... }
 ```
 
+### Compact Metric Labels
+
+`MenuBarExtra` labels are constrained by the real menu bar height. Pure SwiftUI
+multiline labels can be measured as valid text but still render clipped, for
+example a compact `"SSD\n87%"` label where the title is cut off. For dense
+status utilities, render the compact label into an `NSImage` and use
+`Image(nsImage:)` as the visible label.
+
+```swift
+MenuBarExtra {
+    MetricsPopover()
+} label: {
+    Image(nsImage: CompactMetricMenuLabel.image(
+        title: "SSD",
+        value: "87%",
+        color: .systemGreen
+    ))
+    .accessibilityLabel("SSD 87 percent")
+}
+
+enum CompactMetricMenuLabel {
+    static func image(title: String, value: String, color: NSColor) -> NSImage {
+        let size = NSSize(width: 34, height: 22)
+        let image = NSImage(size: size)
+
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.lineBreakMode = .byClipping
+
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 7, weight: .medium),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: paragraph
+        ]
+        let valueAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: color,
+            .paragraphStyle: paragraph
+        ]
+
+        title.draw(in: NSRect(x: 0, y: 13, width: size.width, height: 8), withAttributes: titleAttributes)
+        value.draw(in: NSRect(x: 0, y: 0, width: size.width, height: 14), withAttributes: valueAttributes)
+
+        image.isTemplate = false
+        return image
+    }
+}
+```
+
+Use dynamic `NSColor` values or resolve threshold colors during rendering so
+light and dark menu bar appearances stay legible. Prefer monospaced digits for
+values that update frequently; otherwise the status item jitters as numbers
+change.
+
 ### Dismissing the Menu After Actions
 
 The menu should dismiss after the user clicks an action item:
@@ -142,6 +199,10 @@ struct MenuView: View {
 ## NSStatusItem (AppKit)
 
 For more control over the menu bar item, use AppKit's NSStatusItem directly.
+Use this when the status item needs exact pixel/point layout, multiple compact
+metrics, custom charts, preserved item position, or mixed left/right click
+behavior. `MenuBarExtra` is excellent for ordinary utilities, but it does not
+give enough control for dense live-monitoring widgets.
 
 ### Basic Setup
 
@@ -181,6 +242,58 @@ class StatusBarController {
 }
 ```
 
+### Custom Status Item Views
+
+For professional monitoring utilities, model the menu bar surface as a small
+AppKit view tree hosted inside `NSStatusBarButton`, then set the status item
+length from the measured widget widths. This avoids SwiftUI relayout surprises
+and supports charts, labels, separators, and multiple metrics in one item.
+
+```swift
+final class MetricsStatusItem {
+    private var item: NSStatusItem?
+    private let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 0, height: 22))
+    private var widgets: [NSView] = []
+
+    func install() {
+        item = NSStatusBar.system.statusItem(withLength: 0)
+        item?.autosaveName = "MetricsStatusItem"
+        item?.button?.image = NSImage()
+        item?.button?.addSubview(contentView)
+        item?.button?.target = self
+        item?.button?.action = #selector(togglePopover)
+        item?.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
+        recalculateWidth()
+    }
+
+    func setWidgets(_ newWidgets: [NSView]) {
+        contentView.subviews.forEach { $0.removeFromSuperview() }
+        widgets = newWidgets
+        widgets.forEach(contentView.addSubview)
+        recalculateWidth()
+    }
+
+    private func recalculateWidth() {
+        var x: CGFloat = 2
+        for widget in widgets {
+            widget.setFrameOrigin(NSPoint(x: x, y: widget.frame.origin.y))
+            x += widget.frame.width + 2
+        }
+        contentView.setFrameSize(NSSize(width: x, height: 22))
+        item?.length = x
+    }
+
+    @objc private func togglePopover() {
+        // Show an NSPopover/NSPanel relative to item?.button.
+    }
+}
+```
+
+Keep widget views responsible for their own drawing and intrinsic width. When a
+widget value changes, update only that widget, then call a width callback if the
+string or chart width changed. Use `NSStatusItem.autosaveName` when preserving
+user-controlled menu bar ordering matters.
+
 ### Popover with SwiftUI Content
 
 ```swift
@@ -214,6 +327,34 @@ class StatusBarController {
 }
 ```
 
+### Popover Data Caching
+
+Do not redraw expensive popover detail views on every sensor tick while the
+popover is hidden. Store the latest snapshot, render immediately the first time,
+render live only while visible, and replay the cached value when the popover
+opens. This keeps the menu bar responsive without showing stale data.
+
+```swift
+final class PopupCache<Value> {
+    private var latest: Value?
+    private var initialized = false
+
+    func apply(_ value: Value, visible: Bool, render: (Value) -> Void) {
+        latest = value
+        if visible || !initialized {
+            render(value)
+            initialized = true
+        }
+    }
+
+    func replay(render: (Value) -> Void) {
+        if let latest {
+            render(latest)
+        }
+    }
+}
+```
+
 ## Background-Only App Architecture
 
 A menu bar app with no Dock icon and no main window:
@@ -225,6 +366,46 @@ A menu bar app with no Dock icon and no main window:
 <key>LSUIElement</key>
 <true/>
 ```
+
+Use `LSUIElement=true` for accessory/menu-bar utilities that should keep running after their main window closes without remaining in the Dock. Pair this with an explicit Quit item in the status menu.
+
+### Single Main Window From A Menu Bar Item
+
+If a status item has an "Open App" or "Open Main Window" action, use a singleton SwiftUI `Window`, not `WindowGroup`. `WindowGroup` can create duplicate windows every time `openWindow(id:)` is called.
+
+```swift
+@main
+struct UtilityApp: App {
+    var body: some Scene {
+        Window("Utility", id: "main") {
+            ContentView()
+                .frame(minWidth: 900, minHeight: 600)
+        }
+
+        MenuBarExtra("Utility", systemImage: "waveform") {
+            MenuContent()
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+struct MenuContent: View {
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Button("Open App") {
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+            dismiss()
+        }
+        Divider()
+        Button("Quit") { NSApp.terminate(nil) }
+    }
+}
+```
+
+For this pattern, `applicationShouldTerminateAfterLastWindowClosed` should usually return `false`. Closing the window hides it; quitting remains explicit from the menu.
 
 ### SwiftUI Approach
 
@@ -257,6 +438,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 ```
+
+## Status Item Icon Guidance
+
+Status bar labels are rendered in a constrained system area with selection/highlight states. Prefer:
+
+- SF Symbols through `MenuBarExtra("Title", systemImage: "symbol")` or `Image(systemName:)`.
+- Template-style monochrome symbols for status items.
+- Short text labels with `.fixedSize()` for compact metrics (`CPU 25%`, `RAM 70%`).
+
+Avoid drawing custom bars/blobs with arbitrary SwiftUI shapes unless you have tested highlighted, inactive, dark, light, and wallpaper-translucent menu bar states. Custom filled shapes can turn into dark blobs or lose contrast when selected.
+
+If a custom image is required, provide proper 1x/2x/3x representations and set a stable point size. Use `isTemplate=true` for monochrome system-style icons; leave it false only when intentional brand colors must survive.
 
 ### Activation Policy Switching
 
@@ -304,7 +497,7 @@ Button("Show Dashboard") {
 
 ### Close Button Keeps Utility Alive
 
-For utilities where the menu bar extra is the primary persistent surface, closing the main window should hide the window, not terminate the process. Use a `WindowGroup(id:)` for the main window and an app delegate that keeps the app alive:
+For utilities where the menu bar extra is the primary persistent surface, closing the main window should hide the window, not terminate the process. Use a singleton `Window(id:)` for the main control window and an app delegate that keeps the app alive:
 
 ```swift
 @main
@@ -312,7 +505,7 @@ struct UtilityApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        WindowGroup("Utility", id: "main") {
+        Window("Utility", id: "main") {
             ContentView()
         }
 
@@ -352,6 +545,27 @@ Menu bar monitoring popovers should be dense, predictable, and cheap to refresh:
 - Put one metric family per row. CPU, GPU, RAM, and disk become unreadable when combined.
 - Make manual refresh available even when auto-refresh exists.
 - Use compatible SF Symbol fallbacks. If a hardware-specific symbol does not render on the target macOS, use stable symbols such as `display`, `cpu.fill`, `memorychip.fill`, or `internaldrive.fill`.
+
+### Compact Metric Extras
+
+For optional always-visible menu bar metrics, prefer separate short `MenuBarExtra` items over one crowded mega-label:
+
+```swift
+MenuBarExtra {
+    MetricDetailView(metric: metric)
+} label: {
+    Text("CPU \(cpuPercent)%")
+        .fixedSize()
+}
+```
+
+Important implementation notes:
+
+- A single `Text` label is more reliable than `HStack { Text("CPU"); Text("25%") }`; macOS can collapse composed labels and hide the dynamic value.
+- Keep title and value together in the label string so the percentage remains visible before click.
+- If you use `isInserted:` with `@AppStorage`, make each metric independently toggleable.
+- When multiple extras share one polling bridge, choose the fastest requested interval and avoid starting duplicate timers.
+- On click, show a tiny popover with detail and refresh, not a full dashboard.
 
 ### Global Keyboard Shortcut
 
@@ -395,3 +609,5 @@ class HotkeyManager {
 9. **Use SF Symbols for the status item** - Automatic template rendering for dark/light menu bar
 10. **Verify symbol availability** - Newer SF Symbols can render as blanks on older macOS; use stable fallbacks
 11. **Use explicit quit behavior** - If closing windows keeps the app alive, the menu bar extra must include Quit
+12. **Keep compact labels atomic** - For numeric status extras, put title and value in one `Text` so the menu bar does not drop the value
+13. **Render compact multiline metric labels as images** - SwiftUI text labels can clip inside `MenuBarExtra`
