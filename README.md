@@ -1,10 +1,20 @@
 # Agent Forge Skills
 
+<p>
+  <img alt="Skills" src="https://img.shields.io/badge/Skills-12-blueviolet?style=for-the-badge">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge">
+  <a href="https://www.patreon.com/MT3K"><img alt="Patreon" src="https://img.shields.io/badge/Patreon-Support_MT3K-FF424D?style=for-the-badge&logo=patreon"></a>
+</p>
+
 Reusable Codex and agent skills for productivity, Apple platform development,
 planning, handoffs, skill authoring, and defensive cybersecurity workflows.
 
 This repository is designed to stay safe for public use. Skills should be
 generic, reusable, and free of private project context.
+
+## Support
+
+These skills are free and open source (MIT). If they save you time, [**become a patron**](https://www.patreon.com/MT3K) — patrons ($5+) get early access to new MT3K tools and a voice in what ships next.
 
 ## Skills
 
