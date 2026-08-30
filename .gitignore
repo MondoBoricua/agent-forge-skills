@@ -100,3 +100,9 @@ __pycache__/
 .cursor/
 .vscode/
 .idea/
+
+# ECC upstream clone (private working copy, never commit)
+ECC_REPO/
+
+# graphify output
+graphify-out/
