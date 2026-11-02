@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# claude-auto — `claude` con resume automático SOLO cuando tiene sentido.
+#
+# Añade --continue (retomar la última conversación del cwd) únicamente si:
+#   1. no pasaste ya un flag de sesión (-c/--continue, -r/--resume, --session-id,
+#      --fork-session) ni modo headless (-p/--print);
+#   2. el cwd tiene historial en ~/.claude/projects/<slug>/*.jsonl
+#      (slug = ruta REAL del cwd con todo lo no alfanumérico → "-";
+#      sin historial, `claude --continue` interactivo muere con exit 1:
+#      "No conversation found to continue");
+#   3. no hay ya OTRO claude vivo con ese mismo cwd (k8-claude abre 8 panes en la
+#      misma carpeta: solo el primero retoma; los demás arrancan limpios, así
+#      nunca dos procesos escriben el mismo transcript).
+#
+# Lo llaman los alias `claude` de zsh y fish. `claude-new` = sin resume.
+#   CLAUDE_AUTO_DRY=1  → imprime la decisión y el comando, no lanza nada.
+set -u
+CLAUDE_BIN="$HOME/.local/bin/claude"
+BASE_FLAGS=(--dangerously-skip-permissions)
+
+why=""
+for a in "$@"; do
+  case "$a" in
+    -c|--continue|-r|--resume|--session-id|--fork-session|-p|--print) why="flag propio: $a"; break ;;
+  esac
+done
+
+if [[ -z $why ]]; then
+  cwd=$(pwd -P)
+  slug=$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')
+  if ! compgen -G "$HOME/.claude/projects/$slug/*.jsonl" >/dev/null; then
+    why="sin historial en ~/.claude/projects/$slug"
+  fi
+fi
+
+if [[ -z $why ]]; then
+  # otro claude vivo en este cwd → no retomar (evita dos procesos sobre el mismo transcript)
+  # -a: el pgrep de macOS excluye a sus ANCESTROS por defecto (un claude lanzado desde el
+  # Bash tool de otro claude no vería a su padre); en Linux -a significa otra cosa.
+  for pid in $(pgrep -af '(^|/)claude( |$)' 2>/dev/null); do
+    [[ $pid == $$ ]] && continue
+    pcwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    if [[ -n $pcwd && $pcwd == "$cwd" ]]; then why="ya hay un claude vivo aquí (pid $pid)"; break; fi
+  done
+fi
+
+if [[ -z $why ]]; then
+  extra=(--continue); decision="RETOMA (historial en $slug, ningún otro claude en este cwd)"
+else
+  extra=(); decision="LIMPIA ($why)"
+fi
+
+if [[ ${CLAUDE_AUTO_DRY:-0} == 1 ]]; then
+  echo "claude-auto: $decision"
+  printf 'claude-auto: exec %q' "$CLAUDE_BIN"; printf ' %q' "${BASE_FLAGS[@]}" "${extra[@]}" "$@"; echo
+  exit 0
+fi
+exec "$CLAUDE_BIN" "${BASE_FLAGS[@]}" "${extra[@]}" "$@"

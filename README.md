@@ -1,7 +1,7 @@
 # Agent Forge Skills
 
 <p>
-  <img alt="Skills" src="https://img.shields.io/badge/Skills-12-blueviolet?style=for-the-badge">
+  <img alt="Skills" src="https://img.shields.io/badge/Skills-16-blueviolet?style=for-the-badge">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge">
   <a href="https://www.patreon.com/MT3K"><img alt="Patreon" src="https://img.shields.io/badge/Patreon-Support_MT3K-FF424D?style=for-the-badge&logo=patreon"></a>
 </p>
@@ -32,6 +32,25 @@ These skills are free and open source (MIT). If they save you time, [**become a 
   starting work.
 - `skill-authoring` - Create, review, and sanitize agent skills.
 - `ultra-precise` - Use compact, high-signal technical responses.
+
+### Agent Ops
+
+- `skill-library` - Keep rarely used skills in a reserve library and find them
+  on demand with the bundled `skill-find` searcher (Python, standard library
+  only) instead of loading every description into every session.
+- `verify-first` - Measure before asserting: evidence-first troubleshooting,
+  rehearsed configuration changes, verified backups, same check before and after.
+- `shell-quirks` - Cross-shell and SSH command construction for zsh, fish, bash,
+  Termux and PowerShell 5.1: globbing, aliases, kitty's ssh kitten, nested
+  quoting, safe script transport.
+- `agent-bridge` - Delegate to and talk with other agents (Claude peers, Cursor,
+  Codex, agy): closed briefs, isolated worktrees, tmux and SSH channels,
+  independent cross-review, and the Bridge 2.0 identity/handoff/verification
+  scripts.
+
+The optional [starter kit](starter-kit/README.md) ships the three operating
+rules behind these skills (verify, delegate, search for a skill) plus the
+Claude Code prompt hooks that remind an agent of them.
 
 ### Design Assets
 
@@ -72,6 +91,10 @@ cp -R skills/cybersecurity/kali-mac ~/.agents/skills/
 cp -R skills/apple-development/macos-dev-pro ~/.agents/skills/
 cp -R skills/apple-development/macos-ui-pro ~/.agents/skills/
 cp -R skills/apple-development/swiftui-pro ~/.agents/skills/
+cp -R skills/agent-ops/skill-library ~/.agents/skills/
+cp -R skills/agent-ops/verify-first ~/.agents/skills/
+cp -R skills/agent-ops/shell-quirks ~/.agents/skills/
+cp -R skills/agent-ops/agent-bridge ~/.agents/skills/
 ```
 
 That single `~/.agents/skills` install is read directly by **Codex, OpenCode,
@@ -132,6 +155,10 @@ Steps:
    - `skills/apple-development/macos-dev-pro`
    - `skills/apple-development/macos-ui-pro`
    - `skills/apple-development/swiftui-pro`
+   - `skills/agent-ops/skill-library`
+   - `skills/agent-ops/verify-first`
+   - `skills/agent-ops/shell-quirks`
+   - `skills/agent-ops/agent-bridge`
 4. For Claude Code, copy each folder into `~/.claude/skills/<skill-name>` (real
    copies, not symlinks — Claude's docs do not guarantee symlink discovery).
    Claude does not read `~/.agents/skills`.
@@ -146,6 +173,51 @@ Steps:
 8. If one destination is not used on this machine, skip it and say why.
 9. Verify each installed skill has a `SKILL.md` file.
 10. Report the installed paths, symlink targets, and any skipped existing skills.
+```
+
+## Agent Ops Starter Kit Install Prompt
+
+Give this prompt to an AI coding agent (Claude Code, Codex, Cursor, OpenCode) to
+install the four Agent Ops skills together with the `skill-find` command, the
+operating rules and the Claude Code hooks, without further human intervention:
+
+```text
+Install the Agent Ops starter kit from
+https://github.com/MondoBoricua/agent-forge-skills on this machine. Read
+starter-kit/README.md in the repository first and follow it; the steps below are
+the summary. Measure before changing anything, back up what you replace, and
+report every command you ran with its output.
+
+1. Clone or download the repository into a temporary directory.
+2. Create `~/.agents/skills`, `~/.agents/skills-library`, `~/.local/bin` and
+   `~/.claude/hooks` if they do not exist.
+3. Copy `skills/agent-ops/skill-library`, `skills/agent-ops/verify-first`,
+   `skills/agent-ops/shell-quirks` and `skills/agent-ops/agent-bridge` into
+   `~/.agents/skills/`. If I use Claude Code, also copy them into
+   `~/.claude/skills/` as real folders (Claude does not read `~/.agents`).
+   Do not overwrite an existing skill unless its contents already match or you
+   made a timestamped backup.
+4. Make `~/.agents/skills/skill-library/scripts/skill-find` executable and
+   symlink it to `~/.local/bin/skill-find`. If a different `skill-find` already
+   exists there, stop and ask. Make sure `~/.local/bin` is on my PATH in my
+   shell's startup file; show me the line you add. Optionally symlink
+   `bridge-whoami`, `bridge-verify`, `bridge-handoff` and `agent-usage` from
+   `~/.agents/skills/agent-bridge/scripts/` the same way.
+5. If I use Claude Code: copy the three hooks from `starter-kit/hooks/` into
+   `~/.claude/hooks/`, make them executable, back up `~/.claude/settings.json`,
+   and merge the `UserPromptSubmit` hooks entry shown in starter-kit/README.md
+   into it. Merge, never replace the file; keep every existing hook and setting.
+6. Append the three rule sections from `starter-kit/RULES.md` to my global
+   `CLAUDE.md` (Claude Code), `AGENTS.md` (Codex/OpenCode) or Cursor rules,
+   whichever I use. Adapt the paths only if my skills live somewhere else.
+7. Verify: run `skill-find "docker compose"`; pipe the three sample prompts from
+   starter-kit/README.md section 4 through each hook and show the JSON they
+   print; run `node --test ./*.test.mjs` inside
+   `~/.agents/skills/agent-bridge/scripts/` (Node 20+). Report anything that
+   failed instead of working around it.
+8. Report the installed paths, the symlinks you created, the backup locations
+   and anything you skipped and why. Do not copy `.git`, logs, credentials or
+   tokens, and do not send any of my files anywhere.
 ```
 
 ## Usage
@@ -163,6 +235,10 @@ use macos-dev-pro for this menu bar utility
 use skill-authoring to draft a new skill
 use logo-forge to fetch the Vercel logo
 modo ultra preciso
+skill-find "docker compose"
+verify first before touching the config
+use shell-quirks for this ssh command
+use agent-bridge to delegate this to Codex
 ```
 
 Each skill includes trigger language in its `description` frontmatter.
@@ -428,6 +504,33 @@ skills/
       SKILL.md
     swiftui-pro/
       SKILL.md
+  agent-ops/
+    skill-library/
+      SKILL.md
+      scripts/
+        skill-find
+        opencode-plugin/skill-find/
+    verify-first/
+      SKILL.md
+    shell-quirks/
+      SKILL.md
+    agent-bridge/
+      SKILL.md
+      references/
+        brief-template.md
+        handoff-contract.md
+        zcode-epipe.md
+      scripts/
+        bridge-whoami, bridge-verify, bridge-handoff (+ modules and tests)
+        agent-usage
+        claude-auto
+starter-kit/
+  README.md
+  RULES.md
+  hooks/
+    verify-first-nudge.sh
+    agent-delegate-nudge.sh
+    skill-find-nudge.sh
 ```
 
 Keep each skill small. Add `references/`, `scripts/`, or `assets/` only when

@@ -1,0 +1,406 @@
+#!/usr/bin/env node
+/**
+ * bridge-handoff — estado del encargo, journal y transiciones Bridge 2.0 B.
+ */
+import { resolve, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { resolveIdentity } from './bridge-whoami';
+import { readExecutionTokenFromInvocation } from './bridge-handoff-execution-token.mjs';
+import {
+  handoffNew,
+  handoffStatusSet,
+  handoffDone,
+  handoffShow,
+  handoffReconcile,
+  handoffUnlock,
+  resolveRoot,
+} from './bridge-handoff-lib.mjs';
+
+function printUsage() {
+  process.stderr.write(
+    `Uso:
+  bridge-handoff new --input FILE --request-id UUID [--parent TASK | --retry TASK [--confirm-terminated TEXT] | --round TASK] [--allow-overlap] [--root DIR]
+  bridge-handoff status TASK
+  bridge-handoff status TASK --set STATE --expect-revision N --request-id UUID --note TEXT [--class CLASS] [--outcome unknown] [--run-checks]
+  bridge-handoff status TASK --reconcile --expect-revision N --request-id UUID
+  bridge-handoff done TASK --result FILE --note TEXT --expect-revision N --request-id UUID [--token TOKEN]
+  bridge-handoff show TASK
+  bridge-handoff unlock TASK --force --expect-revision N --request-id UUID
+  bridge-handoff new ... --retry TASK --expect-revision N | --round TASK --expect-revision N
+Opciones: --root DIR, --json|--text, --token TOKEN (ejecutor; o env BRIDGE_EXECUTION_TOKEN), --help
+`,
+  );
+}
+
+function isCliMain() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fileURLToPath(import.meta.url);
+  return resolve(entry) === self || basename(entry) === 'bridge-handoff';
+}
+
+function nextArg(argv, i) {
+  const v = argv[i + 1];
+  if (v === undefined || (typeof v === 'string' && v.startsWith('-'))) return null;
+  return v;
+}
+
+function emit(out, jsonOut) {
+  const text = jsonOut ? JSON.stringify(out, null, 2) : JSON.stringify(out);
+  process.stdout.write(`${text}\n`);
+}
+
+function die(code, msg) {
+  if (msg) process.stderr.write(`${msg}\n`);
+  process.exit(code);
+}
+
+/** lock_io y otros errores enriquecidos (--json incluye errno/path/hint). */
+function reportHandoffFailure(r, jsonOut) {
+  if (r.ownership_conflicts) {
+    emit({ error: r.error, ownership_conflicts: r.ownership_conflicts }, true);
+    return;
+  }
+  if (r.report) {
+    emit({ error: r.error, report: r.report }, true);
+    return;
+  }
+  const lockDetail = r.error === 'lock_io' && (r.errno || r.path || r.hint || r.message);
+  if (lockDetail) {
+    const payload = {
+      error: r.error,
+      lock: r.lock ?? null,
+      errno: r.errno ?? null,
+      path: r.path ?? null,
+      message: r.message ?? null,
+      hint: r.hint ?? null,
+    };
+    if (jsonOut) {
+      emit(payload, true);
+      return;
+    }
+    const hintTxt = r.hint ? ` (${r.hint})` : '';
+    const pathTxt = r.path ? ` path=${r.path}` : '';
+    const errnoTxt = r.errno ? ` errno=${r.errno}` : '';
+    process.stderr.write(`bridge-handoff: ${r.error}${errnoTxt}${pathTxt}${hintTxt}\n`);
+    return;
+  }
+  process.stderr.write(`bridge-handoff: ${r.error}\n`);
+}
+
+function parseCommon(argv, startIdx) {
+  let root = null;
+  let jsonOut = true;
+  let executionToken = null;
+  for (let i = startIdx; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--root') {
+      root = nextArg(argv, i);
+      i += 1;
+    } else if (a === '--token') {
+      executionToken = nextArg(argv, i);
+      if (!executionToken) {
+        printUsage();
+        die(3);
+      }
+      i += 1;
+    } else if (a === '--json') jsonOut = true;
+    else if (a === '--text') jsonOut = false;
+    else if (a === '-h' || a === '--help') return { help: true, jsonOut };
+  }
+  return { root, jsonOut, executionToken: readExecutionTokenFromInvocation(executionToken) };
+}
+
+function main() {
+  const argv = process.argv.slice(2);
+  if (!argv.length) {
+    printUsage();
+    die(3);
+  }
+  const cmd = argv[0];
+  const common = parseCommon(argv, 1);
+  if (common.help) {
+    printUsage();
+    die(0);
+  }
+  const rootRes = resolveRoot(common.root);
+  if (rootRes.error) die(2, `bridge-handoff: ${rootRes.error}`);
+  const root = rootRes.root;
+
+  if (cmd === 'show') {
+    const task = argv[1];
+    if (!task || task.startsWith('-')) {
+      printUsage();
+      die(3);
+    }
+    const r = handoffShow({ root, taskId: task });
+    if (!r.ok) {
+      reportHandoffFailure(r, common.jsonOut);
+      die(r.exit);
+    }
+    emit(r.contract, common.jsonOut);
+    die(0);
+  }
+
+  const identity = resolveIdentity();
+
+  if (cmd === 'unlock') {
+    const task = argv[1];
+    let force = false;
+    let expectRevision = null;
+    let requestId = null;
+    for (let i = 2; i < argv.length; i++) {
+      const a = argv[i];
+      if (a === '--force') force = true;
+      else if (a === '--expect-revision') {
+        expectRevision = Number(nextArg(argv, i));
+        i += 1;
+      } else if (a === '--request-id') {
+        requestId = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--root') i += 1;
+    }
+    if (!task || !force || expectRevision === null || !requestId) {
+      printUsage();
+      die(3);
+    }
+    const r = handoffUnlock({
+      root,
+      taskId: task,
+      force,
+      identity,
+      requestId,
+      expectRevision,
+    });
+    if (!r.ok) {
+      reportHandoffFailure(r, common.jsonOut);
+      die(r.exit);
+    }
+    emit(r.replay ? r.result : r.result ?? r, common.jsonOut);
+    die(0);
+  }
+
+  if (cmd === 'new') {
+    let input = null;
+    let requestId = null;
+    let parent = null;
+    let retry = null;
+    let round = null;
+    let allowOverlap = false;
+    let confirmTerminated = null;
+    let expectRevision = null;
+    for (let i = 1; i < argv.length; i++) {
+      const a = argv[i];
+      if (a === '--input') {
+        input = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--request-id') {
+        requestId = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--parent') {
+        parent = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--retry') {
+        retry = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--round') {
+        round = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--allow-overlap') allowOverlap = true;
+      else if (a === '--confirm-terminated') {
+        confirmTerminated = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--expect-revision') {
+        expectRevision = Number(nextArg(argv, i));
+        i += 1;
+      } else if (a === '--root') i += 1;
+      else if (a === '--json' || a === '--text') {
+        /* ya parseado */
+      } else {
+        printUsage();
+        die(3);
+      }
+    }
+    if (!input || !requestId) {
+      printUsage();
+      die(3);
+    }
+    if ((retry || round) && expectRevision === null) {
+      printUsage();
+      die(3);
+    }
+    const r = handoffNew({
+      root,
+      inputPath: input,
+      requestId,
+      identity,
+      parentTaskId: parent,
+      retryTaskId: retry,
+      roundTaskId: round,
+      allowOverlap,
+      confirmTerminated,
+      expectRevision,
+    });
+    if (!r.ok) {
+      reportHandoffFailure(r, common.jsonOut);
+      die(r.exit);
+    }
+    emit(r.replay ? r.result : r.result ?? r.contract, common.jsonOut);
+    die(0);
+  }
+
+  if (cmd === 'status') {
+    const task = argv[1];
+    if (!task || task.startsWith('-')) {
+      printUsage();
+      die(3);
+    }
+    let setState = null;
+    let expectRevision = null;
+    let requestId = null;
+    let note = '';
+    let interruptClass = null;
+    let outcome = null;
+    let runChecks = false;
+    let reconcile = false;
+    for (let i = 2; i < argv.length; i++) {
+      const a = argv[i];
+      if (a === '--set') {
+        setState = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--expect-revision') {
+        expectRevision = Number(nextArg(argv, i));
+        i += 1;
+      } else if (a === '--request-id') {
+        requestId = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--note') {
+        note = nextArg(argv, i) ?? '';
+        i += 1;
+      } else if (a === '--class') {
+        interruptClass = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--outcome') {
+        outcome = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--run-checks') runChecks = true;
+      else if (a === '--reconcile') reconcile = true;
+      else if (a === '--root' || a === '--token') i += 1;
+      else if (a === '--json' || a === '--text') {
+        /* ok */
+      } else {
+        printUsage();
+        die(3);
+      }
+    }
+    if (!setState && !reconcile) {
+      const r = handoffShow({ root, taskId: task });
+      if (!r.ok) {
+        reportHandoffFailure(r, common.jsonOut);
+        die(r.exit);
+      }
+      emit({ status: r.contract.status, revision: r.contract.revision, contract: r.contract }, common.jsonOut);
+      die(0);
+    }
+    if (expectRevision === null || !requestId) {
+      printUsage();
+      die(3);
+    }
+    if (reconcile) {
+      const r = handoffReconcile({
+        root,
+        taskId: task,
+        expectRevision,
+        requestId,
+        identity,
+      });
+      if (!r.ok) {
+        reportHandoffFailure(r, common.jsonOut);
+        die(r.exit);
+      }
+      emit(r.result, common.jsonOut);
+      die(0);
+    }
+    const r = handoffStatusSet({
+      root,
+      taskId: task,
+      state: setState,
+      expectRevision,
+      requestId,
+      note,
+      identity,
+      interruptClass,
+      outcome,
+      runChecks,
+      executionToken: common.executionToken,
+    });
+    if (!r.ok) {
+      reportHandoffFailure(r, common.jsonOut);
+      die(r.exit);
+    }
+    emit(r.replay ? r.result : r.result, common.jsonOut);
+    die(0);
+  }
+
+  if (cmd === 'done') {
+    const task = argv[1];
+    let resultPath = null;
+    let note = '';
+    let expectRevision = null;
+    let requestId = null;
+    for (let i = 2; i < argv.length; i++) {
+      const a = argv[i];
+      if (a === '--result') {
+        resultPath = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--note') {
+        note = nextArg(argv, i) ?? '';
+        i += 1;
+      } else if (a === '--expect-revision') {
+        expectRevision = Number(nextArg(argv, i));
+        i += 1;
+      } else if (a === '--request-id') {
+        requestId = nextArg(argv, i);
+        i += 1;
+      } else if (a === '--root' || a === '--token') i += 1;
+      else if (a === '--json' || a === '--text') {
+        /* ok */
+      } else {
+        printUsage();
+        die(3);
+      }
+    }
+    if (!task || !resultPath || expectRevision === null || !requestId) {
+      printUsage();
+      die(3);
+    }
+    const r = handoffDone({
+      root,
+      taskId: task,
+      resultPath,
+      note,
+      expectRevision,
+      requestId,
+      identity,
+      executionToken: common.executionToken,
+    });
+    if (!r.ok) {
+      reportHandoffFailure(r, common.jsonOut);
+      die(r.exit);
+    }
+    emit(r.replay ? r.result : r.result, common.jsonOut);
+    die(0);
+  }
+
+  printUsage();
+  die(3);
+}
+
+if (isCliMain()) {
+  try {
+    main();
+  } catch (e) {
+    process.stderr.write(String(e?.message || e));
+    die(3);
+  }
+}

@@ -1,0 +1,191 @@
+#!/usr/bin/env node
+/**
+ * bridge-whoami — identidad del agente por ascendencia de procesos (no por env solo).
+ * ESM sin dependencias; Node ≥ 22.
+ * Regla dura: el entorno solo corrobora o marca conflicto; nunca decide familia sin ps.
+ */
+import { spawnSync } from 'node:child_process';
+import { hostname } from 'node:os';
+import { basename, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  resolveClosestFromChain,
+  scanEnvFamilies,
+  decideAgentFromAncestor,
+} from './bridge-whoami-resolve-helpers.mjs';
+
+const SCHEMA_VERSION = 1;
+
+/**
+ * Parsea salida de `ps -axo pid=,ppid=,comm=`.
+ * @returns {Map<number, {pid, ppid, comm}>}
+ */
+export function parsePsTable(text) {
+  const map = new Map();
+  for (const line of text.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const ppid = Number(m[2]);
+    const comm = m[3].trim();
+    map.set(pid, { pid, ppid, comm });
+  }
+  return map;
+}
+
+function buildParentChain(startPid, psTable) {
+  const chain = [];
+  let pid = startPid;
+  const seen = new Set();
+  while (pid > 0 && !seen.has(pid)) {
+    seen.add(pid);
+    const row = psTable.get(pid);
+    if (!row) break;
+    chain.push(row);
+    pid = row.ppid;
+  }
+  return chain;
+}
+
+/**
+ * Resuelve identidad a partir de datos inyectables (tests) o entorno vivo.
+ * @param {{ psTable?: Map, env?: Record<string,string>, tmux?: { pane_id?: string, tmux_session?: string }, startPid?: number, nodeArgsByPid?: Map<number,string> }} opts
+ */
+export function resolveIdentity(opts = {}) {
+  const env = opts.env ?? process.env;
+  const startPid = opts.startPid ?? process.ppid;
+  const psTable = opts.psTable ?? parsePsTable(readPsOnce());
+  const nodeArgsByPid = opts.nodeArgsByPid ?? new Map();
+  const readNodeArgs = opts.psTable ? undefined : readNodeArgsLive;
+
+  const chain = buildParentChain(startPid, psTable);
+  const { signals, closestFamily } = resolveClosestFromChain(chain, nodeArgsByPid, readNodeArgs);
+  const { hints, envFamilies, sessionIdKeys } = scanEnvFamilies(env);
+  const decided = decideAgentFromAncestor(closestFamily, envFamilies);
+  let { agent_family, confidence, reason, conflicts } = decided;
+
+  if (!closestFamily && envFamilies.size > 0) {
+    hints.push({ kind: 'env_only', families: [...envFamilies] });
+    reason = 'entorno presente pero sin ascendencia identificable';
+  }
+
+  const tmux = opts.tmux ?? readTmux();
+  if (tmux.pane_id) signals.push({ kind: 'tmux_pane', value: tmux.pane_id, distance: 0 });
+  if (tmux.tmux_session) {
+    signals.push({ kind: 'tmux_session', value: tmux.tmux_session, distance: 0 });
+  }
+
+  let session_id = null;
+  for (const key of sessionIdKeys) {
+    if (env[key]) session_id = env[key];
+  }
+
+  return {
+    schema_version: SCHEMA_VERSION,
+    agent_family,
+    confidence,
+    model: null,
+    host: hostname(),
+    pid: startPid,
+    ppid: chain[0]?.ppid ?? process.ppid,
+    cwd: process.cwd(),
+    session_id,
+    pane_id: tmux.pane_id ?? null,
+    tmux_session: tmux.tmux_session ?? null,
+    signals,
+    conflicts,
+    hints,
+    reason,
+  };
+}
+
+function readPsOnce() {
+  const r = spawnSync('ps', ['-axo', 'pid=,ppid=,comm='], { encoding: 'utf8', timeout: 1500 });
+  return r.stdout || '';
+}
+
+function readNodeArgsLive(pid) {
+  const r = spawnSync('ps', ['-o', 'args=', '-p', String(pid)], { encoding: 'utf8', timeout: 800 });
+  return (r.stdout || '').trim();
+}
+
+function readTmux() {
+  const pane = process.env.TMUX_PANE;
+  if (!pane || !process.env.TMUX) return { pane_id: pane || null, tmux_session: null };
+  const r = spawnSync(
+    'tmux',
+    ['display-message', '-p', '-t', pane, '#{pane_id} #{session_name}'],
+    { encoding: 'utf8', timeout: 1000 },
+  );
+  if (r.status !== 0 || !r.stdout) return { pane_id: pane, tmux_session: null };
+  const parts = r.stdout.trim().split(/\s+/);
+  return { pane_id: parts[0] || pane, tmux_session: parts[1] || null };
+}
+
+async function fetchPanelAgents(url) {
+  try {
+    const ctrl = AbortSignal.timeout(2000);
+    const res = await fetch(`${url.replace(/\/$/, '')}/api/agents?flat=1`, { signal: ctrl });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function printUsage() {
+  process.stderr.write('Uso: bridge-whoami [--json|--text] [--panel <url>]\n');
+}
+
+function isCliMain() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fileURLToPath(import.meta.url);
+  return resolve(entry) === self || basename(entry) === 'bridge-whoami';
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  let jsonOut = true;
+  let panelUrl = null;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--json') jsonOut = true;
+    else if (a === '--text') jsonOut = false;
+    else if (a === '--panel') {
+      panelUrl = args[++i];
+      if (!panelUrl) {
+        printUsage();
+        process.exit(2);
+      }
+    } else if (a === '-h' || a === '--help') {
+      printUsage();
+      process.exit(0);
+    } else {
+      printUsage();
+      process.exit(2);
+    }
+  }
+
+  const result = resolveIdentity();
+  if (panelUrl) {
+    const agents = await fetchPanelAgents(panelUrl);
+    if (agents) result.hints.push({ kind: 'panel_agents', count: Array.isArray(agents) ? agents.length : 0 });
+  }
+
+  if (jsonOut) {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  } else {
+    process.stdout.write(
+      `${result.agent_family} (${result.confidence}) pid=${result.pid} — ${result.reason}\n`,
+    );
+  }
+  process.exit(0);
+}
+
+if (isCliMain()) {
+  main().catch((err) => {
+    process.stderr.write(String(err?.message || err));
+    process.exit(2);
+  });
+}

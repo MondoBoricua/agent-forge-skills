@@ -1,0 +1,601 @@
+#!/usr/bin/env node
+/**
+ * bridge-verify — evidencia de verificación (no aceptación) contra brief + worktree git.
+ * acceptance queda siempre pending; el ejecutor no se auto-aprueba.
+ */
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve, basename } from 'node:path';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { resolveIdentity } from './bridge-whoami';
+import { validateContractScalars } from './bridge-verify-contract-enums.mjs';
+import {
+  assembleVerificationReportBody,
+  computeChecksStatus,
+  computeNoop,
+  computeVerificationVerdict,
+  gitInspectFailure,
+  inspectWorktreeAndArtifacts,
+} from './bridge-verify-report-helpers.mjs';
+
+const SCHEMA_VERSION = 1;
+const TAIL_LINES = 20;
+const MAX_BRIEF_BYTES = 1024 * 1024;
+
+const REQUIRED_STRING_FIELDS = [
+  'task_id',
+  'execution_id',
+  'caller_agent',
+  'coordinator_agent',
+  'executor_agent',
+  'role',
+  'status',
+  'objective',
+  'scope',
+  'repo_root',
+  'worktree',
+  'branch',
+  'baseline_head',
+  'completion_criteria',
+  'stop_conditions',
+  'created_at',
+  'updated_at',
+];
+
+const REQUIRED_TOP = [
+  'schema_version',
+  'parent_task_id',
+  'delegation_depth',
+  'recovery_count',
+  'round_count',
+  'limits',
+  'constraints',
+  'context_refs',
+  'allowed_files',
+  'forbidden_files',
+  'expected_artifacts',
+  'required_checks',
+  'evidence_required',
+  'result_path',
+  'deadline',
+  'requires_changes',
+  ...REQUIRED_STRING_FIELDS,
+];
+
+/** Extrae el primer bloque ```json del markdown. */
+export function extractContractJson(markdown) {
+  const re = /```json\s*([\s\S]*?)```/i;
+  const m = markdown.match(re);
+  if (!m) return { error: 'no_json_block' };
+  try {
+    const obj = JSON.parse(m[1]);
+    if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+      return { error: 'contract_not_object' };
+    }
+    return { contract: obj };
+  } catch {
+    return { error: 'invalid_json' };
+  }
+}
+
+function isNonNegInt(n) {
+  return typeof n === 'number' && Number.isInteger(n) && n >= 0;
+}
+
+function isPosInt(n) {
+  return typeof n === 'number' && Number.isInteger(n) && n > 0;
+}
+
+function isStringArray(v) {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+function validateRequiredChecks(checks) {
+  if (!Array.isArray(checks)) return false;
+  return checks.every(
+    (c) => c && typeof c === 'object' && typeof c.cmd === 'string' && (c.cwd === undefined || typeof c.cwd === 'string'),
+  );
+}
+
+/** Validación estricta del contrato; mensaje breve sin stack. */
+export function validateContract(contract) {
+  if (!contract || typeof contract !== 'object') return { ok: false, reason: 'not_object' };
+  const missing = REQUIRED_TOP.filter((f) => contract[f] === undefined);
+  if (missing.length) return { ok: false, reason: 'missing', fields: missing };
+  if (contract.schema_version !== 1) return { ok: false, reason: 'schema_version' };
+  if (contract.task_id === contract.execution_id) return { ok: false, reason: 'task_eq_execution' };
+  if (!isNonNegInt(contract.delegation_depth)) return { ok: false, reason: 'delegation_depth' };
+  if (!isNonNegInt(contract.recovery_count)) return { ok: false, reason: 'recovery_count' };
+  if (!isNonNegInt(contract.round_count)) return { ok: false, reason: 'round_count' };
+  const lim = contract.limits;
+  if (!lim || typeof lim !== 'object') return { ok: false, reason: 'limits' };
+  if (!isPosInt(lim.max_depth) || !isPosInt(lim.max_recoveries) || !isPosInt(lim.max_rounds)) {
+    return { ok: false, reason: 'limits_positive' };
+  }
+  if (lim.max_depth !== 2 || lim.max_recoveries !== 2 || lim.max_rounds !== 3) {
+    return { ok: false, reason: 'limits_mismatch' };
+  }
+  if (!isStringArray(contract.allowed_files)) return { ok: false, reason: 'allowed_files' };
+  if (!isStringArray(contract.forbidden_files)) return { ok: false, reason: 'forbidden_files' };
+  if (!isStringArray(contract.expected_artifacts)) return { ok: false, reason: 'expected_artifacts' };
+  if (!isStringArray(contract.evidence_required)) return { ok: false, reason: 'evidence_required' };
+  if (!Array.isArray(contract.constraints)) return { ok: false, reason: 'constraints' };
+  if (!Array.isArray(contract.context_refs)) return { ok: false, reason: 'context_refs' };
+  if (!validateRequiredChecks(contract.required_checks)) return { ok: false, reason: 'required_checks' };
+  if (typeof contract.requires_changes !== 'boolean') return { ok: false, reason: 'requires_changes' };
+  const scalars = validateContractScalars(contract);
+  if (!scalars.ok) return scalars;
+  for (const f of REQUIRED_STRING_FIELDS) {
+    if (typeof contract[f] !== 'string') return { ok: false, reason: `type_${f}` };
+  }
+  return { ok: true };
+}
+
+/** Glob simple sin librerías (ver pathMatchesPattern). */
+export function pathMatchesPattern(pattern, filePath) {
+  const norm = filePath.replace(/\\/g, '/');
+  const pat = pattern.replace(/\\/g, '/');
+  if (!pat.includes('*') && !pat.includes('?')) {
+    return norm === pat || norm.startsWith(`${pat}/`);
+  }
+  let re = '';
+  for (let i = 0; i < pat.length; i++) {
+    const ch = pat[i];
+    if (ch === '*' && pat[i + 1] === '*' && pat[i + 2] === '/') {
+      re += '(?:.*/)?';
+      i += 2;
+      continue;
+    }
+    if (ch === '*' && pat[i + 1] === '*') {
+      re += '.*';
+      i += 1;
+      continue;
+    }
+    if (ch === '*') {
+      re += '[^/]*';
+      continue;
+    }
+    if (ch === '?') {
+      re += '[^/]';
+      continue;
+    }
+    if ('.+^${}()|[]\\'.includes(ch)) re += `\\${ch}`;
+    else re += ch;
+  }
+  return new RegExp(`^${re}$`).test(norm);
+}
+
+export function fileMatchesAny(path, patterns) {
+  if (!patterns?.length) return false;
+  return patterns.some((p) => pathMatchesPattern(p, path));
+}
+
+function runGit(worktree, args) {
+  const r = spawnSync('git', ['-C', worktree, ...args], { encoding: 'utf8', timeout: 30_000 });
+  return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+
+/** cat-file -p devuelve bytes crudos; utf8 corrompe binarios (p. ej. 0x89 0x50). */
+function runGitBuffer(worktree, args) {
+  const r = spawnSync('git', ['-C', worktree, ...args], { timeout: 30_000 });
+  const stderr = r.stderr?.length ? r.stderr.toString('utf8') : '';
+  return { code: r.status ?? 1, stdout: r.stdout ?? Buffer.alloc(0), stderr };
+}
+
+function parseNulPaths(stdout) {
+  if (!stdout) return [];
+  return stdout.split('\0').filter(Boolean);
+}
+
+/** Porcelain v1 -z: renombres traen dos rutas seguidas. */
+export function parsePorcelainZ(stdout) {
+  const files = new Set();
+  const parts = stdout.split('\0').filter((p) => p.length > 0);
+  let i = 0;
+  while (i < parts.length) {
+    const line = parts[i];
+    i += 1;
+    if (line.length < 4) continue;
+    const xy = line.slice(0, 2);
+    const pathPart = line.slice(3);
+    if (xy[0] === 'R' || xy[1] === 'R') {
+      if (i < parts.length) {
+        files.add(parts[i]);
+        i += 1;
+      }
+    } else {
+      files.add(pathPart);
+    }
+  }
+  return files;
+}
+
+/** Inspección git; cualquier fallo → ok:false. */
+export function inspectGitWorktree(worktree, baseline) {
+  const isRepo = runGit(worktree, ['rev-parse', '--git-dir']);
+  if (isRepo.code !== 0) {
+    return { ok: false, inspection_error: gitInspectFailure('rev-parse --git-dir', isRepo) };
+  }
+  const baselineCheck = runGit(worktree, ['cat-file', '-t', baseline]);
+  if (baselineCheck.code !== 0) {
+    return { ok: false, inspection_error: gitInspectFailure(`cat-file -t ${baseline}`, baselineCheck) };
+  }
+  const head = runGit(worktree, ['rev-parse', 'HEAD']);
+  if (head.code !== 0) {
+    return { ok: false, inspection_error: gitInspectFailure('rev-parse HEAD', head) };
+  }
+  const diffStat = runGit(worktree, ['diff', '--stat', baseline]);
+  if (diffStat.code !== 0) {
+    return { ok: false, inspection_error: gitInspectFailure(`diff --stat ${baseline}`, diffStat) };
+  }
+  const status = runGit(worktree, ['status', '--porcelain', '-z', '--untracked-files=all']);
+  if (status.code !== 0) {
+    return {
+      ok: false,
+      inspection_error: gitInspectFailure('status --porcelain -z --untracked-files=all', status),
+    };
+  }
+  const diffNames = runGit(worktree, ['diff', '--name-only', '-z', baseline]);
+  if (diffNames.code !== 0) {
+    return { ok: false, inspection_error: gitInspectFailure(`diff --name-only -z ${baseline}`, diffNames) };
+  }
+  const unstaged = runGit(worktree, ['diff', '--name-only', '-z']);
+  if (unstaged.code !== 0) {
+    return { ok: false, inspection_error: gitInspectFailure('diff --name-only -z', unstaged) };
+  }
+  const files = new Set([
+    ...parseNulPaths(diffNames.stdout),
+    ...parseNulPaths(unstaged.stdout),
+    ...parsePorcelainZ(status.stdout),
+  ]);
+  return {
+    ok: true,
+    head: head.stdout.trim(),
+    diff_stat: diffStat.stdout.trim(),
+    status_porcelain: status.stdout,
+    changed_files: [...files].sort(),
+  };
+}
+
+export function listChangedFiles(worktree, baseline) {
+  const insp = inspectGitWorktree(worktree, baseline);
+  if (!insp.ok) return { ok: false, inspection_error: insp.inspection_error, changed_files: [] };
+  return { ok: true, changed_files: insp.changed_files };
+}
+
+export function computeScopeViolations(changed, allowed, forbidden) {
+  const violations = [];
+  const allowNone = !allowed?.length;
+  for (const f of changed) {
+    if (forbidden?.length && fileMatchesAny(f, forbidden)) {
+      violations.push({ path: f, reason: 'forbidden' });
+      continue;
+    }
+    if (allowNone || !fileMatchesAny(f, allowed)) {
+      violations.push({ path: f, reason: allowNone ? 'no_allowed_scope' : 'outside_allowed' });
+    }
+  }
+  return violations;
+}
+
+function fileHash(content) {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * Estado de un artefacto esperado; distingue lectura git fallida vs archivo nuevo en baseline.
+ * @param {(args: string[]) => { code: number, stdout?: Buffer|string, stderr?: string }} [gitRun]
+ */
+export function artifactStatus(worktree, baseline, relPath, gitRun = null) {
+  const run = gitRun ?? ((args) => runGit(worktree, args));
+  const runBlob = gitRun ?? ((args) => runGitBuffer(worktree, args));
+  const abs = join(worktree, relPath);
+  if (!existsSync(abs)) return { path: relPath, state: 'missing' };
+  try {
+    if (statSync(abs).isDirectory()) return { path: relPath, state: 'is_directory' };
+  } catch {
+    return { path: relPath, state: 'missing' };
+  }
+  const current = readFileSync(abs);
+  const existedAtBaseline = run(['cat-file', '-e', `${baseline}:${relPath}`]);
+  if (existedAtBaseline.code !== 0) {
+    return { path: relPath, state: 'delivered', hash: fileHash(current) };
+  }
+  const atBaseline = runBlob(['cat-file', '-p', `${baseline}:${relPath}`]);
+  if (atBaseline.code !== 0) {
+    return {
+      path: relPath,
+      state: 'inspection_error',
+      inspection_error: gitInspectFailure(`cat-file -p ${baseline}:${relPath}`, {
+        code: atBaseline.code,
+        stderr: atBaseline.stderr ?? '',
+      }),
+    };
+  }
+  const baselineBuf = Buffer.isBuffer(atBaseline.stdout)
+    ? atBaseline.stdout
+    : Buffer.from(atBaseline.stdout ?? '', 'utf8');
+  const currentBuf = Buffer.isBuffer(current) ? current : Buffer.from(current);
+  if (baselineBuf.equals(currentBuf)) {
+    return { path: relPath, state: 'preexisting_unchanged' };
+  }
+  return { path: relPath, state: 'delivered', hash: fileHash(current) };
+}
+
+export function checkLimitViolations(contract) {
+  const v = [];
+  const lim = contract.limits || {};
+  if (contract.delegation_depth > (lim.max_depth ?? 2)) {
+    v.push({ field: 'delegation_depth', value: contract.delegation_depth, max: lim.max_depth });
+  }
+  if (contract.recovery_count > (lim.max_recoveries ?? 2)) {
+    v.push({ field: 'recovery_count', value: contract.recovery_count, max: lim.max_recoveries });
+  }
+  if (contract.round_count > (lim.max_rounds ?? 3)) {
+    v.push({ field: 'round_count', value: contract.round_count, max: lim.max_rounds });
+  }
+  return v;
+}
+
+function tailLines(text, n) {
+  const lines = String(text).split('\n');
+  return lines.slice(-n).join('\n');
+}
+
+export function runRequiredChecks(checks) {
+  const results = [];
+  for (const { cmd, cwd } of checks || []) {
+    const start = Date.now();
+    // OpenCode obedece $PWD, no el cwd del proceso. Alineamos los dos
+    // para que un required_check que lance `opencode` trabaje en esa carpeta.
+    const dir = resolve(cwd || process.cwd());
+    const r = spawnSync('/bin/sh', ['-c', cmd], {
+      cwd: dir,
+      env: { ...process.env, PWD: dir },
+      encoding: 'utf8',
+      timeout: 600_000,
+    });
+    results.push({
+      cmd,
+      cwd: cwd || '.',
+      exit: r.status ?? 1,
+      duration_ms: Date.now() - start,
+      stdout_tail: tailLines(r.stdout || '', TAIL_LINES),
+      stderr_tail: tailLines(r.stderr || '', TAIL_LINES),
+    });
+  }
+  return results;
+}
+
+export function resolveVerifierIndependence({ observed, declared, executor }) {
+  const self_report = observed === executor;
+  let independence = 'unknown';
+  let independence_note = null;
+  if (declared && declared !== observed) {
+    independence_note = 'verifier_declared difiere de verifier_observed; override no confiere independencia';
+  } else if (observed === 'unknown') {
+    independence_note = 'verifier_observed unknown; override no confiere independencia';
+  } else if (self_report) {
+    independence = 'self_report';
+    independence_note = 'verifier_observed coincide con executor_agent';
+  } else if (observed !== executor) {
+    independence = 'observed_distinct';
+  }
+  return { self_report, independence, independence_note };
+}
+
+/** Ensambla el informe de verificación (inspección + veredicto). */
+export function buildVerificationReport({
+  contract,
+  worktree,
+  runChecks = false,
+  checkResults = null,
+  verifierObserved = 'unknown',
+  verifierDeclared = null,
+  gitInspection = null,
+  artifactGitRun = null,
+}) {
+  const baseline = contract.baseline_head;
+  const { insp, inspectionOk, changed, artifacts } = inspectWorktreeAndArtifacts({
+    worktree,
+    baseline,
+    expectedArtifacts: contract.expected_artifacts,
+    gitInspection,
+    inspectGitWorktree,
+    artifactStatus,
+    artifactGitRun,
+  });
+  const scope_violations = inspectionOk
+    ? computeScopeViolations(changed, contract.allowed_files, contract.forbidden_files)
+    : [];
+  const limit_violations = checkLimitViolations(contract);
+  const delivery = contract.status === 'submitted' ? 'submitted' : 'not_submitted';
+  const executor = contract.executor_agent || 'unknown';
+  const { self_report, independence, independence_note } = resolveVerifierIndependence({
+    observed: verifierObserved,
+    declared: verifierDeclared,
+    executor,
+  });
+  const noop = inspectionOk ? computeNoop(changed, contract) : false;
+  const checks_status = computeChecksStatus(runChecks, contract.required_checks);
+  const verdict = computeVerificationVerdict({
+    inspectionOk,
+    contract,
+    runChecks,
+    checkResults: checkResults || [],
+    scope_violations,
+    limit_violations,
+    artifacts,
+    noop,
+  });
+  return assembleVerificationReportBody({
+    SCHEMA_VERSION,
+    verdict,
+    delivery,
+    verifierObserved,
+    verifierDeclared,
+    self_report,
+    independence,
+    independence_note,
+    checks_status,
+    checkResults: checkResults || [],
+    insp,
+    inspectionOk,
+    baseline,
+    changed,
+    scope_violations,
+    artifacts,
+    limit_violations,
+    noop,
+  });
+}
+
+export function writeAtomic(targetPath, content) {
+  const dir = dirname(targetPath);
+  const tmp = join(dir, `.${basename(targetPath)}.tmp.${process.pid}`);
+  writeFileSync(tmp, content, 'utf8');
+  try {
+    renameSync(tmp, targetPath);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignorar limpieza */
+    }
+    throw e;
+  }
+  return tmp;
+}
+
+function printUsage() {
+  process.stderr.write(
+    'Uso: bridge-verify --worktree <ruta> --brief <ruta.md> [--run-checks] [--out <file.json>] [--verifier <familia>] [--json|--text]\n',
+  );
+}
+
+function isCliMain() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const self = fileURLToPath(import.meta.url);
+  return resolve(entry) === self || basename(entry) === 'bridge-verify';
+}
+
+function nextArgValue(argv, i) {
+  const v = argv[i + 1];
+  if (v === undefined || (typeof v === 'string' && v.startsWith('-'))) return null;
+  return v;
+}
+
+function parseCliArgs(argv) {
+  const opts = {
+    worktree: null,
+    briefPath: null,
+    runChecks: false,
+    outPath: null,
+    verifier: null,
+    jsonOut: true,
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--worktree') {
+      const v = nextArgValue(argv, i);
+      if (!v) return { error: true };
+      opts.worktree = v;
+      i += 1;
+    } else if (a === '--brief') {
+      const v = nextArgValue(argv, i);
+      if (!v) return { error: true };
+      opts.briefPath = v;
+      i += 1;
+    } else if (a === '--run-checks') opts.runChecks = true;
+    else if (a === '--out') {
+      const v = nextArgValue(argv, i);
+      if (!v) return { error: true };
+      opts.outPath = v;
+      i += 1;
+    } else if (a === '--verifier') {
+      const v = nextArgValue(argv, i);
+      if (!v) return { error: true };
+      opts.verifier = v;
+      i += 1;
+    } else if (a === '--json') opts.jsonOut = true;
+    else if (a === '--text') opts.jsonOut = false;
+    else if (a === '-h' || a === '--help') return { help: true };
+    else return { error: true };
+  }
+  if (!opts.worktree || !opts.briefPath) return { error: true };
+  return opts;
+}
+
+function loadBriefContract(briefPath) {
+  const buf = readFileSync(briefPath);
+  if (buf.length > MAX_BRIEF_BYTES) return { error: 'brief_too_large' };
+  const markdown = buf.toString('utf8');
+  const extracted = extractContractJson(markdown);
+  if (extracted.error) return { error: extracted.error };
+  const valid = validateContract(extracted.contract);
+  if (!valid.ok) return { error: 'invalid_contract', detail: valid };
+  return { contract: extracted.contract };
+}
+
+function emitReport(report, { jsonOut, outPath }) {
+  const text = JSON.stringify(report, null, jsonOut ? 2 : 0);
+  if (outPath) writeAtomic(resolve(outPath), `${text}\n`);
+  process.stdout.write(`${jsonOut ? text : `${report.verification_verdict} delivery=${report.delivery}\n`}`);
+}
+
+function exitForVerdict(verdict) {
+  if (verdict === 'evidence_ok') process.exit(0);
+  if (verdict === 'evidence_failed') process.exit(1);
+  process.exit(2);
+}
+
+function main() {
+  try {
+    const parsed = parseCliArgs(process.argv.slice(2));
+    if (parsed.help) {
+      printUsage();
+      process.exit(0);
+    }
+    if (parsed.error) {
+      printUsage();
+      process.exit(3);
+    }
+    const worktree = resolve(parsed.worktree);
+    const loaded = loadBriefContract(parsed.briefPath);
+    if (loaded.error) {
+      process.stderr.write(`bridge-verify: ${loaded.error}\n`);
+      process.exit(3);
+    }
+    const contract = loaded.contract;
+    const observed = resolveIdentity().agent_family;
+    const checkResults = parsed.runChecks ? runRequiredChecks(contract.required_checks) : null;
+    const report = buildVerificationReport({
+      contract,
+      worktree,
+      runChecks: parsed.runChecks,
+      checkResults,
+      verifierObserved: observed,
+      verifierDeclared: parsed.verifier,
+    });
+    try {
+      emitReport(report, { jsonOut: parsed.jsonOut, outPath: parsed.outPath });
+    } catch (e) {
+      if (parsed.outPath) {
+        process.stderr.write('bridge-verify: output_error\n');
+        process.exit(2);
+      }
+      process.stderr.write(String(e.message || e));
+      process.exit(3);
+    }
+    exitForVerdict(report.verification_verdict);
+  } catch (e) {
+    process.stderr.write(String(e.message || e));
+    process.exit(3);
+  }
+}
+
+if (isCliMain()) {
+  main();
+}

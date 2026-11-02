@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+usage() {
+  printf '%s\n' 'Uso: agent-usage [--json] [--only claude,codex,cursor,agy] [--no-cursor]' \
+    'Consulta cuota usada y reinicio local; --only puede repetirse. Cursor puede tardar ~25 s.'
+}
+json=0; selected=; no_cursor=0
+while (($#)); do
+  case "$1" in
+    --json) json=1 ;;
+    --no-cursor) no_cursor=1 ;;
+    --only)
+      shift
+      if (($# == 0)) || [[ -z "$1" ]]; then usage >&2; exit 2; fi
+      IFS=, read -r -a choices <<< "$1"
+      for a in "${choices[@]}"; do
+        case "$a" in claude|codex|cursor|agy) selected="$selected $a" ;; *) usage >&2; exit 2 ;; esac
+      done ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+work=$(mktemp -d "${TMPDIR:-/tmp}/agent-usage.XXXXXX") || exit 1
+pids=()
+cleanup() {
+  for p in "${pids[@]}"; do kill -TERM "$p" 2>/dev/null || :; done
+  rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+claude() {
+  local token
+  token=$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null |
+    python3 -I -c 'import json,sys; print(json.load(sys.stdin)["claudeAiOauth"]["accessToken"])' 2>/dev/null) || return 1
+  [[ -n "$token" ]] || return 1
+  curl -fsS -m 15 -H "Authorization: Bearer $token" -H 'anthropic-beta: oauth-2025-04-20' \
+    -H 'Content-Type: application/json' https://api.anthropic.com/api/oauth/usage 2>/dev/null
+}
+codex() (
+  local child i
+  set -m
+  ( (printf '%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-usage","title":"agent-usage","version":"0.1.0"}}}' \
+    '{"jsonrpc":"2.0","method":"initialized","params":{}}' \
+    '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}'; sleep 8) |
+    command codex app-server 2>/dev/null ) >"$work/codex.stream" & child=$!
+  trap 'kill -TERM -- "-$child" 2>/dev/null || :' EXIT
+  trap 'exit 143' TERM INT
+  for ((i=0;i<29;i++)); do
+    if python3 -I -c 'import json,sys
+for line in sys.stdin:
+ try: d=json.loads(line)
+ except ValueError: continue
+ if d.get("id")==2:
+  print(json.dumps(d)); sys.exit(0)
+sys.exit(1)' <"$work/codex.stream"; then exit 0; fi
+    sleep 1
+  done
+  exit 1
+)
+agy() { command agy --output-format text -p='/usage' 2>/dev/null; }
+cursor() (
+  cd "$work" || exit 1
+  local session="agentusage$$" pane= i
+  # A relative -S socket avoids the macOS Unix socket pathname limit.
+  trap 'tmux -S s kill-session -t "$session" 2>/dev/null || :' EXIT
+  trap 'exit 143' TERM INT
+  tmux -S s new-session -d -s "$session" -x 110 -y 50 -c "$HOME" \
+    'cursor-agent --trust --mode ask' >/dev/null 2>&1 || exit 1
+  sleep 12
+  tmux -S s send-keys -t "$session" -l '/usage' || exit 1
+  sleep 2
+  tmux -S s send-keys -t "$session" Enter || exit 1
+  for ((i=0;i<15;i++)); do
+    pane=$(tmux -S s capture-pane -p -t "$session" 2>/dev/null) || exit 1
+    if [[ "$pane" == *'Monthly plan and on-demand usage'* ]]; then
+      printf '%s\n' "$pane"; tmux -S s send-keys -t "$session" Escape; exit 0
+    fi
+    [[ "$pane" == *'Show plan and on-demand'* ]] && tmux -S s send-keys -t "$session" Enter
+    sleep 1
+  done
+  exit 1
+)
+
+normalize() {
+  local raw line key pct reset group period values=() pattern
+  if [[ "$1" == cursor ]]; then
+    raw=; while IFS= read -r line || [[ -n "$line" ]]; do raw+="$line"$'\n'; done
+    pattern='Resets[[:space:]]+([A-Za-z]{3})[[:space:]]+([0-9]{1,2})'
+    [[ "$raw" =~ $pattern ]] && values+=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+    for key in Included Auto API; do pattern="$key[[:space:]]+([0-9.]+)%[[:space:]]+used"; [[ "$raw" =~ $pattern ]] && values+=("${BASH_REMATCH[1]}"); done
+    pattern='On-Demand[[:space:]]+(Disabled|Enabled)'; [[ "$raw" =~ $pattern ]] && values+=("${BASH_REMATCH[1]}")
+    pattern='Usage[[:space:]]*[•·][[:space:]]*(.*)[[:space:]]+Resets'; [[ "$raw" =~ $pattern ]] && values+=("${BASH_REMATCH[1]}")
+  elif [[ "$1" == agy ]]; then
+    while IFS=$'\t' read -r group period pct reset; do
+      case "$group/$period" in 'Gemini Models/Weekly Limit Remaining') key='Gemini 7 días' ;; 'Gemini Models/Five Hour Limit Remaining') key='Gemini 5 horas' ;; 'Claude and GPT models/Weekly Limit Remaining') key='Claude/GPT 7 días' ;; 'Claude and GPT models/Five Hour Limit Remaining') key='Claude/GPT 5 horas' ;; *) continue ;; esac
+      values+=("$key" "${pct%%%}" "$reset")
+    done
+  fi
+  if [[ "$1" == cursor || "$1" == agy ]]; then
+    printf '%s\n' "${values[@]}" | python3 -I -c 'import json,sys; print(json.dumps(sys.stdin.read().splitlines()))' >"$work/$1.parsed"
+    exec <"$work/$1.parsed"
+  fi
+  python3 -I -c '
+import sys,json,datetime as dt,math
+agent=sys.argv[1]; raw=sys.stdin.read(); rows=[]; extra={}
+def iso(v):
+ if isinstance(v,(int,float)): d=dt.datetime.fromtimestamp(v,dt.timezone.utc)
+ else:
+  d=dt.datetime.fromisoformat(v.replace("Z","+00:00"))
+  if d.tzinfo is None: raise ValueError()
+ return d.astimezone().isoformat()
+def row(name,pct,reset):
+ pct=float(pct)
+ if not math.isfinite(pct) or not 0<=pct<=100: raise ValueError()
+ rows.append(dict(window=name,used_pct=pct,resets_at=iso(reset)))
+def window(n):
+ return {300:"5 horas",10080:"7 días"}.get(n,str(n)+" min")
+try:
+ if agent=="claude":
+  d=json.loads(raw)
+  for k,n in [("five_hour","5 horas"),("seven_day","7 días")]:
+   row(n,d[k]["utilization"],d[k]["resets_at"])
+ elif agent=="codex":
+  d=json.loads(raw)["result"]; limits=d["rateLimits"]
+  for k in ("primary","secondary"):
+   v=limits.get(k)
+   if v: row(window(v["windowDurationMins"]),v["usedPercent"],v["resetsAt"])
+  extra["reset_credits"]=d.get("rateLimitResetCredits",{}).get("availableCount")
+  extra["plan"]=limits.get("planType")
+ elif agent=="cursor":
+  v=json.loads(raw)
+  months="Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+  now=dt.datetime.now().astimezone()
+  day=dt.date(now.year,months.index(v[0].title())+1,int(v[1]))
+  if day<now.date(): day=day.replace(year=day.year+1)
+  reset=dt.datetime.combine(day,dt.time()).astimezone().isoformat()
+  for name,pct in zip(("Included","Auto","API"),v[2:5]): row(name,pct,reset)
+  extra["on_demand"]=v[5]; extra["plan"]=v[6].strip()
+ elif agent=="agy":
+  v=json.loads(raw)
+  for i in range(0,len(v),3): row(v[i],100-float(v[i+1]),v[i+2])
+  if len(rows)!=4: raise ValueError()
+ if not rows: raise ValueError()
+ print(json.dumps(dict(windows=rows,**extra),ensure_ascii=False))
+except Exception:
+ print(json.dumps({"error":"respuesta inválida"},ensure_ascii=False)); sys.exit(1)
+' "$1"
+}
+
+export -f claude codex cursor agy
+export work
+timed_query() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$2" bash -c "$1"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$2" bash -c "$1"
+  else "$1"; fi
+}
+
+run_agent() (
+  local a="$1" seconds="$2" child watch rc
+  # Job control gives the entire query its own process group for the watchdog.
+  set -m
+  timed_query "$a" "$seconds" >"$work/$a.raw" 2>/dev/null & child=$!
+  trap 'kill -TERM -- "-$child" 2>/dev/null || :; kill "$watch" 2>/dev/null || :' EXIT
+  trap 'exit 143' TERM INT
+  (sleep "$seconds"; printf '%s' timeout >"$work/$a.timeout";
+    kill -TERM -- "-$child" 2>/dev/null || :; sleep 2;
+    kill -KILL -- "-$child" 2>/dev/null || :) & watch=$!
+  wait "$child" 2>/dev/null; rc=$?
+  kill "$watch" 2>/dev/null || :
+  wait "$watch" 2>/dev/null || :
+  if [[ -e "$work/$a.timeout" ]] || ((rc == 124)); then
+    printf '{"error":"tiempo agotado"}\n' >"$work/$a.json"
+  elif ((rc != 0)); then
+    printf '{"error":"consulta fallida"}\n' >"$work/$a.json"
+  else
+    normalize "$a" <"$work/$a.raw" >"$work/$a.json" 2>/dev/null || :
+  fi
+)
+agents=()
+for a in claude codex cursor agy; do
+  [[ -n "$selected" && " $selected " != *" $a "* ]] && continue
+  [[ "$a" == cursor && "$no_cursor" == 1 ]] && continue
+  agents+=("$a")
+  case "$a" in claude) seconds=20 ;; codex) seconds=30 ;; *) seconds=60 ;; esac
+  run_agent "$a" "$seconds" 2>/dev/null & pids+=("$!")
+done
+for p in "${pids[@]}"; do wait "$p" 2>/dev/null || :; done
+pids=()
+python3 -I -c '
+import sys,json,datetime as dt
+root,mode=sys.argv[1:3]; result={}
+for a in sys.argv[3:]:
+ try:
+  with open(root+"/"+a+".json") as f: result[a]=json.load(f)
+ except Exception: result[a]={"error":"consulta fallida"}
+if mode=="1": print(json.dumps(result,ensure_ascii=False))
+else:
+ lines=[("Agente","Ventana","Usado %","Resetea")]
+ names={"claude":"Claude Code","codex":"Codex","cursor":"Cursor","agy":"agy"}
+ weekdays="lun mar mié jue vie sáb dom".split(); months="ene feb mar abr may jun jul ago sep oct nov dic".split()
+ for a,d in result.items():
+  if "error" in d: lines.append((names[a],"—","n/d ("+d["error"]+")","—")); continue
+  for i,w in enumerate(d["windows"]):
+   t=dt.datetime.fromisoformat(w["resets_at"]).astimezone()
+   stamp=f"{weekdays[t.weekday()]} {t.day:02d} {months[t.month-1]} {t:%H:%M}"
+   pct=w["used_pct"]
+   lines.append((names[a] if i==0 else "",w["window"],f"{pct:g}%",stamp))
+ widths=[max(len(r[i]) for r in lines) for i in range(4)]
+ for r in lines: print(" | ".join(v.ljust(widths[i]) for i,v in enumerate(r)).rstrip())
+sys.exit(0 if any("windows" in d for d in result.values()) else 1)
+' "$work" "$json" "${agents[@]}"

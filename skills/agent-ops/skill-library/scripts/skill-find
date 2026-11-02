@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Read-only skill discovery; derived JSON cache, Python stdlib only.
+
+Caché por defecto ~/.cache/skill-find/index.json;
+--index/SKILL_FIND_INDEX cambian el destino.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+import unicodedata
+
+VERSION = 1
+STOP = set('skill skills biblioteca library cargada cargadas cubra cubre ninguna busca buscar empezar a al algo antes como con cuando cada de del desde donde el ella en entre es esta este esto hacer hacia hasta hay la las le lo los mas me mi mis muy no nos o para pero por porque que se si sin sobre su sus tengo the and for with from this that when use using into you your un una unas unos y ya to of in on is it as be by an or at do'.split())
+# Small bilingual concept vocabulary. Applied to both corpus and query; no skill IDs.
+GROUPS = [
+    'agente agentes agent agents', 'independiente independientes independent',
+    'rapido faster fast speed', 'paralelo paralelos parallel concurrent serie',
+    'modulo modulos module modules', 'archivo archivos file files',
+    'refactorizar refactor refactoring', 'prueba pruebas test tests testing',
+    'regresion regression', 'estrategia estrategias strategy strategies',
+    'cambiar cambio cambios change changes changing', 'impacto impact afectado afectaria afectados',
+    'funcion funciones function functions firma signature interfaces',
+    'analisis analysis', 'herramientas herramienta tools tool',
+    'desconocidos untrusted', 'endurezco endurecer hardening harden security seguridad',
+    'ejecute ejecutar invoke runtime', 'gpu gpus rtx vram nvidia',
+    'lento lentisimo slow', 'diagnostico diagnosticar diagnosis diagnostics',
+    'ajuste ajustar tuning tune optimizar optimization optimizer',
+    'produccion production', 'repo repository', 'iphone ipa sideload instalar install',
+]
+
+def normalize(text):
+    return ''.join(c for c in unicodedata.normalize('NFKD', text.lower()) if not unicodedata.combining(c))
+
+ALIASES = {}
+for group in GROUPS:
+    words = group.split()
+    for word in words:
+        ALIASES[word] = words[0]
+
+def tokens(text):
+    return [ALIASES.get(w, w) for w in re.findall(r'[a-z0-9]+', normalize(text)) if len(w) >= 3 and w not in STOP]
+
+
+def parse_frontmatter(md, fallback):
+    # Port of ~/.local/bin/skills-index.mjs:11-36 (same continuation/key rules).
+    name, desc = fallback, ''
+    match = re.match(r'^---\n([\s\S]*?)\n---', md)
+    if match:
+        lines = match[1].split('\n')
+        for i, line in enumerate(lines):
+            nm = re.match(r'^name:\s*(.+)$', line)
+            if nm:
+                name = re.sub(r'^["\']|["\']$', '', nm[1].strip())
+            dm = re.match(r'^description:\s*(.*)$', line)
+            if dm:
+                val = dm[1].strip()
+                if val in ('>', '|', '>-', '|-', ''):
+                    parts = []
+                    for following in lines[i + 1:]:
+                        if re.match(r'^\S', following):
+                            break
+                        parts.append(following.strip())
+                    desc = ' '.join(parts).strip()
+                else:
+                    desc = re.sub(r'^["\']|["\']$', '', val)
+    return name, desc
+
+
+def read_skill(path, bucket):
+    md = path.read_text(encoding='utf-8', errors='replace')
+    name, desc = parse_frontmatter(md, path.parent.name)
+    phrases = re.findall(r'["“]([^"”]+)["”]', desc)
+    phrases += re.findall(r"(?<!\w)'([^'\n]+)'(?!\w)", desc)
+    phrases += re.findall(r'(?:Use when|Usar cuando|Usar con|Triggers?|Disparadores)\s*:?\s*(.*)', desc, re.I)
+    origin = re.search(r'^\s*origin:\s*(.+)$', md.split('\n---', 1)[0], re.M)
+    return dict(name=name, bucket=bucket, path=str(path), folder=path.parent.name,
+                description=desc, triggers=phrases,
+                headings=re.findall(r'^##\s+(.+)$', md, re.M)[:12],
+                origin=origin[1].strip().strip('"\'') if origin else None)
+
+
+def index_skills(roots, index, rebuild=False):
+    roots = [(root.resolve(), bucket) for root, bucket in roots]
+    manifest, files, folders = {}, [], 0
+    for root, bucket in roots:
+        if not root.is_dir():
+            raise ValueError(f'raíz ausente: {root}')
+        for entry in sorted(root.iterdir()):
+            entry = entry.resolve()
+            if not entry.is_relative_to(root):
+                continue
+            if not entry.is_dir():
+                continue
+            folders += 1
+            path = (entry / 'SKILL.md').resolve()
+            if not path.is_relative_to(root):
+                continue
+            try:
+                st = path.stat()
+            except FileNotFoundError:
+                continue
+            key = str(path)
+            if key in manifest:
+                continue
+            manifest[key] = [st.st_mtime_ns, st.st_size, bucket]
+            files.append((path, bucket))
+    signature = dict(roots=[[str(p), b] for p, b in roots], folders=folders, files=manifest)
+    old = {}
+    if not rebuild:
+        try:
+            old = json.loads(index.read_text(encoding='utf-8'))
+            if (isinstance(old, dict) and old.get('version') == VERSION
+                    and old.get('signature') == signature
+                    and isinstance(old.get('skills'), list)
+                    and all(isinstance(skill, dict)
+                            and all(isinstance(skill.get(key), str)
+                                    for key in ('name', 'bucket', 'path', 'description'))
+                            for skill in old['skills'])):
+                return old['skills']
+        except (OSError, ValueError, KeyError):
+            pass
+    skills = [read_skill(p, b) for p, b in files]
+    index.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix='.skill-find-', dir=index.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
+            json.dump(dict(version=VERSION, signature=signature, skills=skills), out, ensure_ascii=False)
+        os.replace(temp, index)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    return skills
+
+
+def search(skills, query, auto=False):
+    # Pure explanation requests do not start domain work; no automatic nudge.
+    if auto and re.search(r'^\s*(?:explic\w*|explain)\b.*\b(?:diferencia|difference)\b', normalize(query)):
+        return []
+    query_tokens = set(tokens(query))
+    ranked = []
+    for skill in skills:
+        score, matched = 0, set()
+        for field, weight in [('name', 5), ('triggers', 4), ('description', 2), ('headings', 1), ('folder', 3)]:
+            value = skill[field]
+            if isinstance(value, list):
+                value = ' '.join(value)
+            hits = query_tokens & set(tokens(value))
+            score += weight * len(hits)
+            matched |= hits
+        desc = tokens(skill['description'])
+        if any(a in query_tokens and b in query_tokens and a != b for a, b in zip(desc, desc[1:])):
+            score += 3
+        if score and (not auto or (len(matched) >= 2 and score >= 8)):
+            ranked.append(dict(skill, score=score, matched_tokens=sorted(matched)))
+    ranked.sort(key=lambda r: (-r['score'], r['bucket'] != 'active', r['name']))
+    # An already loaded best candidate means no library nudge is useful.
+    if auto and ranked and ranked[0]['bucket'] == 'active':
+        return []
+    return ranked
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('query', nargs='*')
+    parser.add_argument('--roots', nargs='+', help='active root then library root; or bucket=path entries')
+    parser.add_argument('--library-only', action='store_true')
+    parser.add_argument('-n', type=int, default=5)
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--auto', metavar='TEXT')
+    parser.add_argument('--rebuild', action='store_true')
+    parser.add_argument('--index', type=Path, default=Path(os.environ.get('SKILL_FIND_INDEX', str(Path.home() / '.cache/skill-find/index.json'))))
+    args = parser.parse_args()
+    try:
+        if args.n < 1:
+            raise ValueError('-n debe ser positivo')
+        raw_roots = args.roots or [str(Path.home() / '.agents/skills'), str(Path.home() / '.agents/skills-library')]
+        roots = []
+        for i, raw in enumerate(raw_roots):
+            if '=' in raw and raw.split('=', 1)[0] in ('active', 'library'):
+                bucket, raw = raw.split('=', 1)
+            else:
+                bucket = 'library' if i or Path(raw).name == 'skills-library' else 'active'
+            roots.append((Path(raw).expanduser().absolute(), bucket))
+        skills = index_skills(roots, args.index.expanduser(), args.rebuild)
+        if args.library_only:
+            skills = [s for s in skills if s['bucket'] == 'library']
+        query = args.auto if args.auto is not None else ' '.join(args.query)
+        if not query.strip():
+            if args.rebuild:
+                print('[]' if args.json else f'indexadas: {len(skills)}')
+                return 0
+            raise ValueError('falta consulta')
+        results = search(skills, query, args.auto is not None)[:min(3, args.n) if args.auto is not None else args.n]
+        if args.json:
+            print(json.dumps(results, ensure_ascii=False))
+        else:
+            for i, row in enumerate(results, 1):
+                print(f"{i}  {row['score']}  {row['bucket']}  {row['name']} — {row['description'][:110]} — {row['path']}")
+            if results and results[0]['bucket'] == 'active':
+                print('(ya está cargada: no hace falta buscar en la biblioteca)')
+        return 0 if results or args.auto is not None or args.json else 1
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f'skill-find: {exc}', file=sys.stderr)
+        return 2
+
+if __name__ == '__main__':
+    sys.exit(main())
