@@ -241,6 +241,10 @@ report every command you ran with its output.
    `~/.claude/hooks/`, make them executable, back up `~/.claude/settings.json`,
    and merge the `UserPromptSubmit` hooks entry shown in starter-kit/README.md
    into it. Merge, never replace the file; keep every existing hook and setting.
+   If I use Codex CLI: also create or merge `~/.codex/hooks.json` with the same
+   three commands under `UserPromptSubmit` (exact JSON in starter-kit/README.md,
+   section "Codex CLI") and tell me to run `/hooks` once in the Codex TUI to
+   trust them, because Codex skips untrusted hooks silently.
 6. Append the three rule sections from `starter-kit/RULES.md` to my global
    `CLAUDE.md` (Claude Code), `AGENTS.md` (Codex/OpenCode) or Cursor rules,
    whichever I use. Adapt the paths only if my skills live somewhere else.

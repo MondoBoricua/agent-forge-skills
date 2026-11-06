@@ -86,6 +86,34 @@ Merge the following `hooks` entry into `~/.claude/settings.json`. Preserve exist
 
 See the [Claude Code hook documentation](https://code.claude.com/docs/en/hooks) for the host's configuration schema.
 
+### Codex CLI
+
+Codex runs the same three scripts unchanged: its `UserPromptSubmit` hook receives the same
+`{"prompt": ...}` JSON and accepts the same `hookSpecificOutput.additionalContext` reply
+(see the [Codex hooks documentation](https://learn.chatgpt.com/docs/hooks.md)). Create or
+merge `~/.codex/hooks.json` (keep the scripts in `~/.claude/hooks/` or copy them next to it):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash \"$HOME/.claude/hooks/verify-first-nudge.sh\"" },
+          { "type": "command", "command": "bash \"$HOME/.claude/hooks/agent-delegate-nudge.sh\"" },
+          { "type": "command", "command": "bash \"$HOME/.claude/hooks/skill-find-nudge.sh\"" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Codex skips non-managed hooks until you review and trust them once: open the Codex TUI and run
+`/hooks`. A changed script needs a new approval. Verified with Codex CLI 0.165.0: a
+troubleshooting prompt produced three `hook: UserPromptSubmit Completed` lines and the
+verify-first reminder appeared in the session transcript; without the file it did not.
+
 ## 4. Check installation
 
 ```bash
