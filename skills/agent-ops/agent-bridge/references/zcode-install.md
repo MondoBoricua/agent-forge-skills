@@ -33,7 +33,10 @@ zcode doctor             # CLI version (0.17.0), node, platform
 ```
 
 `ZCODE_DIST_HOME` and `ZCODE_DIST_BIN_DIR` change the install paths (README of the repo).
-Updating: `git pull`, then steps 2 and 3 again.
+Updating: `git pull`, then steps 2 and 3 again; `install.sh` switches `~/.zcode/runtime/current` to the
+new release, keeps the old one for rollback (`ln -sfn releases/<old> ~/.zcode/runtime/current`) and
+overwrites `~/.local/bin/zcode`, so restore the fixed-Node wrapper afterwards. Measured: 3.16.2 → 3.17.2
+in ~13 min (`pnpm install` ~10 min because the desktop package rebuilds Electron, build ~1 min).
 
 ## Traps (measured)
 
