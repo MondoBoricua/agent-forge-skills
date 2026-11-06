@@ -300,6 +300,8 @@ inspect and stop only the service/process belonging to this job; avoid a broad p
 
 ### ZCode
 
+Installing the `zcode` CLI (built from source, no official installer): [zcode-install.md](references/zcode-install.md).
+
 Examples to check against the installed version:
 
 ```bash
