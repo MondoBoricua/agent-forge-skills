@@ -205,8 +205,16 @@ Steps:
 7. Do not copy `.git`, logs, dumps, datasets, reports, exports, environment
    files, secrets, tokens, credentials, hashes, or potfiles.
 8. If one destination is not used on this machine, skip it and say why.
-9. Verify each installed skill has a `SKILL.md` file.
-10. Report the installed paths, symlink targets, and any skipped existing skills.
+9. Append the three rule sections from `starter-kit/RULES.md` (verify before
+   asserting, delegate by default, search for a skill first) to my global rules
+   file for each agent I use: `~/.claude/CLAUDE.md` for Claude Code,
+   `~/.codex/AGENTS.md` for Codex, the global rules of Cursor or OpenCode
+   otherwise. Back up the file first and merge; never replace it or remove
+   existing rules. Skip a section that is already there.
+10. Verify each installed skill has a `SKILL.md` file and that
+    `~/.agents/skills/verify-first/SKILL.md`, the path the rules point to, exists.
+11. Report the installed paths, symlink targets, the rules files you edited with
+    their backups, and any skipped existing skills.
 ```
 
 ## Agent Ops Starter Kit Install Prompt
