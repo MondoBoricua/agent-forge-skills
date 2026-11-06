@@ -58,6 +58,12 @@ Want only the four operating skills plus the `skill-find` command, rules and
 hooks? Use the [Agent Ops Starter Kit Install Prompt](#agent-ops-starter-kit-install-prompt)
 alone. To pick skills by hand, see [Installation](#installation).
 
+## YOLO station prompt
+
+Want every agent CLI to start without permission prompts, plus `ai <agent>` (one tmux session per
+project folder) and `tm` (jump between agent windows)? Read [starter-kit/YOLO.md](starter-kit/YOLO.md)
+and paste the prompt at its end to your agent.
+
 ## Skills
 
 ### Productivity

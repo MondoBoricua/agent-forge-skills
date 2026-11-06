@@ -1,0 +1,78 @@
+#!/bin/bash
+# Selector de todas las ventanas tmux. Bash 3.2; fish/zsh invocan este archivo.
+set -u
+case "${PREFIX:-}" in *com.termux*) echo 'este equipo tiene su propia estación ai'; exit 2;; esac
+if [ "${OS:-}" = Windows_NT ] || [ -n "${MSYSTEM:-}" ]; then
+    echo 'este equipo tiene su propia estación ai'; exit 2
+fi
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+tmx() {
+    if [ -n "${AI_TMUX_SOCKET:-}" ]; then command tmux -u -S "$AI_TMUX_SOCKET" "$@"
+    else command tmux -u "$@"; fi
+}
+same_tmux_server() {
+    [ -n "${TMUX:-}" ] || return 1
+    [ -n "${AI_TMUX_SOCKET:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "${TMUX%%,*}" "$AI_TMUX_SOCKET" <<'PYSOCKET'
+import os, sys
+sys.exit(0 if os.path.realpath(sys.argv[1]) == os.path.realpath(sys.argv[2]) else 1)
+PYSOCKET
+}
+command -v tmux >/dev/null 2>&1 || fail 'Falta: tmux'
+# Solo IDs numéricos generados por tmux llegan al comando de vista previa.
+if [ "${1:-}" = --preview-pane ]; then
+    [ "$#" -eq 2 ] || exit 2
+    case "$2" in %*) id=${2#%};; *) exit 2;; esac
+    case "$id" in ''|*[!0-9]*) exit 2;; esac
+    tmx display-message -p -t "$2" '#{session_name} | #{?AI_AGENT,#{AI_AGENT},#{pane_current_command}} | #{?AI_MODE,#{AI_MODE},—} | #{?AI_PROJECT_DIR,#{AI_PROJECT_DIR},#{pane_current_path}}' || exit $?
+    tmx capture-pane -p -t "$2" 2>/dev/null
+    exit $?
+fi
+case "${1:-}" in
+    --help|-h) echo 'tm [texto] · sesión, agente, modo y ruta; Enter entra; Esc cancela. tm --list: listar.'; exit 0;;
+esac
+# IDs ocultos para fzf, etiquetas y rutas solo como datos, nunca como código.
+rows=$(tmx list-windows -a -F $'#{pane_id}\t#{window_id}\t#{session_id}\t#{session_name}:#{window_index}\t#{?AI_AGENT,#{AI_AGENT},#{pane_current_command}}\t#{?AI_MODE,#{AI_MODE},—}\t#{?AI_PROJECT_DIR,#{AI_PROJECT_DIR},#{pane_current_path}}' 2>/dev/null) || fail 'No hay sesiones tmux.'
+[ -n "$rows" ] || fail 'No hay ventanas tmux.'
+if [ "${1:-}" = --list ]; then
+    printf '%s\n' "$rows" | cut -f4-
+    exit 0
+fi
+if [ -n "${AI_TM_SELECT:-}" ]; then
+    # Selección exacta por nombre de sesión/ventana o por ID para pruebas sin TTY.
+    selected=$(printf '%s\n' "$rows" | awk -F '\t' -v wanted="$AI_TM_SELECT" '
+        $1==wanted || $2==wanted || $3==wanted || $4==wanted {print; next}
+        {label=$4; sub(/:[0-9]+$/, "", label); if (label==wanted) print}')
+else
+    command -v fzf >/dev/null 2>&1 || fail 'Falta: fzf'
+    filtered=$rows
+    if [ "$#" -gt 0 ]; then
+        filtered=$(printf '%s\n' "$rows" | FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf --delimiter='\t' --nth=4.. --exact --filter="$*") || fail 'Sin coincidencias.'
+    fi
+    count=$(printf '%s\n' "$filtered" | awk 'END {print NR}')
+    if [ "$#" -gt 0 ] && [ "$count" -eq 1 ]; then selected=$filtered
+    else
+        case "$0" in
+            /*) self=$0;;
+            *) cur=$(pwd -P) || fail 'Directorio actual inválido.'; self=$cur/$0;;
+        esac
+        printf -v preview '%q --preview-pane {1}' "$self"
+        selected=$(printf '%s\n' "$filtered" | SHELL=/bin/bash FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf \
+            --delimiter='\t' --with-nth=4.. --prompt='Ventana > ' --height=90% --layout=reverse \
+            --preview="$preview" --preview-window='down,60%,wrap') || exit 0
+    fi
+fi
+[ -n "$selected" ] || fail 'Sin coincidencias.'
+[ "$(printf '%s\n' "$selected" | awk 'END {print NR}')" -eq 1 ] || fail 'Coincide con varias ventanas; usa sesión:índice o @ID.'
+IFS=$'\t' read -r _pane window session label _rest <<< "$selected"
+# Revalida los IDs contra la lista, sin ejecutar ningún texto de la etiqueta.
+case "$window" in @*) :;; *) fail 'Ventana inválida.';; esac
+case "$session" in \$*) :;; *) fail 'Sesión inválida.';; esac
+if [ "${AI_NO_ATTACH:-0}" = 1 ]; then
+    printf 'Selección: %s (%s) | %s\n' "$label" "$window" "$_rest"
+    exit 0
+fi
+tmx select-window -t "$window" || exit $?
+if same_tmux_server; then tmx switch-client -t "$session"
+else tmx attach-session -t "$session"; fi

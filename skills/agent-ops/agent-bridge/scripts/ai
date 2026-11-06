@@ -1,0 +1,286 @@
+#!/bin/bash
+# Estación Mac. Bash 3.2; ejecutable compartido por fish y zsh.
+set -u
+case "${PREFIX:-}" in *com.termux*) echo 'este equipo tiene su propia estación ai'; exit 2;; esac
+if [ "${OS:-}" = Windows_NT ] || [ -n "${MSYSTEM:-}" ]; then
+    echo 'este equipo tiene su propia estación ai'; exit 2
+fi
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || fail "Falta: $1"; }
+tmx() {
+    if [ -n "${AI_TMUX_SOCKET:-}" ]; then command tmux -u -S "$AI_TMUX_SOCKET" "$@"
+    else command tmux -u "$@"; fi
+}
+same_tmux_server() {
+    [ -n "${TMUX:-}" ] || return 1
+    [ -n "${AI_TMUX_SOCKET:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 1
+    python3 - "${TMUX%%,*}" "$AI_TMUX_SOCKET" <<'PYSOCKET'
+import os, sys
+sys.exit(0 if os.path.realpath(sys.argv[1]) == os.path.realpath(sys.argv[2]) else 1)
+PYSOCKET
+}
+usage() {
+    cat <<'HELP'
+ai                         Menú de agentes disponibles (YOLO)
+ai AGENTE                  Reengancha o crea sesión de esta carpeta
+ai safe AGENTE             Sin flags YOLO; conserva ajustes del agente
+ai new AGENTE              Siempre sesión tmux nueva
+ai resume AGENTE [ID]      Sin ID reengancha; con ID abre otra sesión
+ai plan AGENTE             Muestra el comando, sin ejecutarlo
+ai safe plan AGENTE        Muestra el comando sin flags YOLO
+ai plan resume AGENTE [ID] Muestra el comando de reanudación
+ai auth AGENTE             Login interactivo, si está soportado
+ai status                  Versiones, flags y autenticación (sin secretos)
+ai sessions                Ventanas: sesión, agente, modo y ruta absoluta
+ai shell                   Shell de esta carpeta (reengancha o crea)
+ai help                    Esta ayuda
+Agentes: claude, codex, agy, cursor-agent (cursor), opencode, copilot, zcode, dsh.
+Identidad: ruta física + agente + modo. new añade -2, -3…
+Ctrl+b, d: desconectar. tm: volver a una ventana.
+DSH usa el perfil web; no anuncia YOLO, resume ni login en su ayuda general.
+Pruebas: AI_NO_ATTACH=1; AI_TMUX_SOCKET=ruta/socket (servidor aislado).
+HELP
+}
+# Solo se capturan respuestas para clasificarlas: nunca se imprimen credenciales.
+probe() {
+    python3 - "$@" <<'PY'
+import json, re, subprocess, sys
+kind, agent, binary, *args = sys.argv[1:]
+try:
+    r = subprocess.run([binary]+args, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+except subprocess.TimeoutExpired:
+    print('tiempo agotado'); sys.exit(0)
+except OSError:
+    print('no disponible'); sys.exit(0)
+s = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', r.stdout.decode(errors='replace'))
+if kind == 'version':
+    # Una sola línea, sin códigos de control.
+    lines = [x.strip() for x in s.splitlines() if x.strip()]
+    print(''.join(c for c in (lines[0] if lines else 'desconocida') if c.isprintable())[:100]
+          if r.returncode == 0 else 'no disponible')
+elif agent == 'claude':
+    try:
+        value = json.loads(s).get('loggedIn')
+        print('sí' if value is True else 'no' if value is False else 'desconocido')
+    except (ValueError, AttributeError): print('desconocido')
+elif agent == 'codex':
+    text = s.lower()
+    print('no' if 'not logged in' in text else
+          'sí' if r.returncode == 0 and 'logged in' in text else 'desconocido')
+elif agent == 'cursor-agent':
+    text = s.lower()
+    print('no' if 'not logged in' in text or 'not authenticated' in text else
+          'sí' if r.returncode == 0 and ('logged in' in text or 'authenticated' in text) else 'desconocido')
+else:
+    # Una lista de credenciales no demuestra que sigan siendo válidas.
+    print('sin consulta verificada')
+PY
+}
+resolve_agent() {
+    case "$1" in cursor) agent=cursor-agent;; *) agent=$1;; esac
+    case "$agent" in
+        claude|codex|agy|cursor-agent|opencode|copilot|zcode|dsh) binary=$(type -P "$agent") || fail "No disponible: $agent";;
+        shell) binary=${SHELL:-/bin/bash}; [ -x "$binary" ] || fail "Shell no disponible: $binary";;
+        *) fail "Agente desconocido: $agent. Usa ai help.";;
+    esac
+}
+yolo_flags() {
+    flags=()
+    case "$agent" in
+        claude|agy) flags=(--dangerously-skip-permissions);;
+        codex) flags=(--dangerously-bypass-approvals-and-sandbox);;
+        cursor-agent) flags=(--force --approve-mcps --trust);;
+        opencode) flags=(--auto);;
+        copilot) flags=(--yolo);;
+        zcode) flags=(--mode yolo);;
+    esac
+}
+show_status() {
+    need python3
+    printf 'AGENTE | VERSIÓN | FLAG YOLO | AUTENTICADO\n'
+    for agent in claude codex agy cursor-agent opencode copilot zcode dsh; do
+        if ! binary=$(type -P "$agent"); then
+            printf '%s | no instalado | — | —\n' "$agent"; continue
+        fi
+        version=$(probe version "$agent" "$binary" --version)
+        yolo_flags
+        flag_text=${flags[*]:-sin flag verificado}
+        case "$agent" in
+            claude) authenticated=$(probe auth "$agent" "$binary" auth status);;
+            codex) authenticated=$(probe auth "$agent" "$binary" login status);;
+            cursor-agent) authenticated=$(probe auth "$agent" "$binary" status);;
+            *) authenticated='sin consulta verificada';;
+        esac
+        printf '%s | %s | %s | %s\n' "$agent" "$version" "$flag_text" "$authenticated"
+    done
+}
+
+mode=yolo
+action=open
+plan=0
+# Los modificadores se pueden combinar: safe plan resume codex, plan safe codex.
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        safe) mode=safe; shift;;
+        plan) plan=1; shift;;
+        new|resume) [ "$action" = open ] || fail 'Usa solo new o resume.'; action=$1; shift;;
+        *) break;;
+    esac
+done
+case "${1:-}" in
+    help|--help|-h) usage; exit 0;;
+    status) [ "$#" -eq 1 ] || fail 'Uso: ai status'; show_status; exit 0;;
+    sessions)
+        [ "$#" -eq 1 ] || fail 'Uso: ai sessions'; need tmux
+        rows=$(tmx list-windows -a -F '#{session_name}:#{window_index} | #{?AI_AGENT,#{AI_AGENT},#{pane_current_command}} | #{?AI_MODE,#{AI_MODE},—} | #{?AI_PROJECT_DIR,#{AI_PROJECT_DIR},#{pane_current_path}}' 2>/dev/null) || fail 'No hay sesiones tmux.'
+        printf '%s\n' "$rows"; exit 0;;
+    auth)
+        [ "$#" -eq 2 ] || fail 'Uso: ai auth AGENTE'
+        resolve_agent "$2"
+        case "$agent" in
+            claude|opencode) cmd=("$binary" auth login);;
+            codex|cursor-agent|copilot|zcode) cmd=("$binary" login);;
+            *) fail "Login no soportado: $agent";;
+        esac
+        if [ "$plan" -eq 1 ]; then printf '%q ' "${cmd[@]}"; printf '\n'; exit 0; fi
+        exec "${cmd[@]}";;
+esac
+if [ "$#" -eq 0 ]; then
+    [ "$action" = open ] && [ "$plan" -eq 0 ] || fail 'Falta AGENTE. Usa ai help.'
+    need fzf; need python3
+    menu=''
+    for candidate in claude codex agy cursor-agent opencode copilot zcode dsh; do
+        if candidate_bin=$(type -P "$candidate"); then
+            version=$(probe version "$candidate" "$candidate_bin" --version)
+            menu="${menu}${candidate} | ${version}
+"
+        fi
+    done
+    [ -n "$menu" ] || fail 'No hay agentes disponibles.'
+    selection=$(printf '%s' "$menu" | FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' command fzf --prompt='Agente > ' --height=70% --layout=reverse) || exit 0
+    set -- "${selection%% |*}"
+fi
+resolve_agent "$1"; shift
+resume_id=''
+if [ "$action" = resume ]; then
+    [ "$#" -le 1 ] || fail 'Uso: ai resume AGENTE [ID]'
+    resume_id=${1:-}
+    case "$resume_id" in -*) fail 'ID inválido.';; esac
+elif [ "$#" -ne 0 ]; then
+    fail 'Argumentos sobrantes. Usa ai help.'
+fi
+# La ruta del proceso llamador manda; no hay carpeta predeterminada.
+[ -n "${PWD:-}" ] && [ -d "$PWD" ] && [ -r "$PWD" ] && [ -x "$PWD" ] || fail 'El directorio actual no existe o no es legible.'
+project_dir=$(pwd -P) || fail 'No se pudo resolver el directorio actual.'
+[ -d "$project_dir" ] && [ -r "$project_dir" ] && [ -x "$project_dir" ] || fail 'El directorio actual no existe o no es legible.'
+need python3
+session_mode=YOLO
+[ "$mode" != safe ] || session_mode=SAFE
+base_session=$(python3 - "$agent" "$project_dir" "$session_mode" <<'PYNAME'
+import hashlib, os, re, sys
+slug = re.sub(r'[^a-z0-9]+', '-', (os.path.basename(sys.argv[2]) or 'home').lower())
+slug = re.sub(r'^-|-$', '', slug)[:20] or 'home'
+h4 = hashlib.sha1(os.fsencode(sys.argv[2])).hexdigest()[:4]
+print('mt3k-'+sys.argv[1]+'-'+slug+'-'+h4+('-safe' if sys.argv[3]=='SAFE' else ''))
+PYNAME
+) || fail 'No se pudo generar nombre.'
+# Los metadatos son la identidad; h4 solo hace el nombre legible y corto.
+# Lee cada variable por separado para conservar espacios y saltos de línea.
+find_live_session() {
+    local sid saved_dir saved_agent saved_mode dead candidate=''
+    while IFS= read -r sid; do
+        [ -n "$sid" ] || continue
+        saved_dir=$(tmx show-environment -t "$sid" AI_PROJECT_DIR 2>/dev/null) || continue
+        saved_agent=$(tmx show-environment -t "$sid" AI_AGENT 2>/dev/null) || continue
+        saved_mode=$(tmx show-environment -t "$sid" AI_MODE 2>/dev/null) || continue
+        [ "$saved_dir" = "AI_PROJECT_DIR=$project_dir" ] || continue
+        [ "$saved_agent" = "AI_AGENT=$agent" ] || continue
+        [ "$saved_mode" = "AI_MODE=$session_mode" ] || continue
+        dead=$(tmx list-panes -s -t "$sid" -F '#{pane_dead}' 2>/dev/null) || continue
+        case "$dead" in *0*) :;; *) continue;; esac
+        candidate=$(tmx display-message -p -t "$sid:" '#{session_name}') || continue
+        if [ "$candidate" = "$base_session" ]; then printf '%s\n' "$candidate"; return 0; fi
+        [ -n "${fallback_session:-}" ] || fallback_session=$candidate
+    done < <(tmx list-sessions -F '#{session_id}' 2>/dev/null)
+    if [ -n "${fallback_session:-}" ]; then printf '%s\n' "$fallback_session"; return 0; fi
+    return 1
+}
+connect_session() {
+    if [ "${AI_NO_ATTACH:-0}" = 1 ]; then printf '%s\n' "$session"
+    elif same_tmux_server; then tmx switch-client -t "=$session"
+    else tmx attach-session -t "=$session"; fi
+}
+# Sin ID, reanudar primero reengancha la viva. Un ID explícito exige otro proceso.
+if [ "$action" != new ] && [ -z "$resume_id" ] && command -v tmux >/dev/null 2>&1; then
+    fallback_session=''
+    if session=$(find_live_session); then
+        if [ "$plan" -eq 1 ]; then
+            printf 'cd -- %q && tmux -u ' "$project_dir"
+            [ -z "${AI_TMUX_SOCKET:-}" ] || printf '%q %q ' -S "$AI_TMUX_SOCKET"
+            if same_tmux_server; then printf 'switch-client '; else printf 'attach-session '; fi
+            printf -- '-t \\=%q\n' "$session"
+        else connect_session; fi
+        exit $?
+    fi
+fi
+cmd=("$binary")
+# La ayuda de DSH exige un perfil; en esta Mac existe web, no tui.
+[ "$agent" != dsh ] || cmd+=(web)
+if [ "$mode" = yolo ]; then
+    yolo_flags
+    if [ "${#flags[@]}" -gt 0 ]; then cmd+=("${flags[@]}"); fi
+fi
+if [ "$action" = resume ]; then
+    case "$agent" in
+        claude) if [ -n "$resume_id" ]; then cmd+=(--resume "$resume_id"); else cmd+=(--continue); fi;;
+        codex) cmd+=(resume); if [ -n "$resume_id" ]; then cmd+=("$resume_id"); else cmd+=(--last); fi;;
+        cursor-agent) if [ -n "$resume_id" ]; then cmd+=(--resume "$resume_id"); else cmd+=(--continue); fi;;
+        agy) if [ -n "$resume_id" ]; then cmd+=(--conversation "$resume_id"); else cmd+=(--continue); fi;;
+        opencode) if [ -n "$resume_id" ]; then cmd+=(--session "$resume_id"); else cmd+=(--continue); fi;;
+        copilot|zcode) if [ -n "$resume_id" ]; then cmd+=(--resume "$resume_id"); else cmd+=(--continue); fi;;
+        *) fail "Reanudar no soportado: $agent";;
+    esac
+fi
+if [ "$plan" -eq 1 ]; then
+    printf 'cd -- %q && ' "$project_dir"; printf '%q ' "${cmd[@]}"; printf '\n'; exit 0
+fi
+need tmux
+# Entorno de la nueva sesión: conserva el del llamador y reemplaza metadatos ajenos.
+launch_env=()
+while IFS= read -r -d '' pair; do launch_env+=(-e "$pair"); done < <(python3 - <<'PYENV'
+import os, sys
+for key, value in os.environ.items():
+    if key not in ('TMUX', 'TMUX_PANE', 'TERM', 'PWD', 'SHLVL', '_',
+                    'AI_PROJECT_DIR', 'AI_AGENT', 'AI_MODE'):
+        sys.stdout.buffer.write(os.fsencode(key+'='+value)+b'\0')
+PYENV
+)
+launch_env+=(-e "AI_PROJECT_DIR=$project_dir" -e "AI_AGENT=$agent" -e "AI_MODE=$session_mode")
+# Un nombre ocupado por otra tripleta (incluida colisión h4) recibe otro ordinal.
+# Si dos clientes abren la misma tripleta a la vez, el segundo reconsulta y reusa.
+ordinal=1
+while :; do
+    if [ "$action" != new ] && [ -z "$resume_id" ]; then
+        fallback_session=''
+        if session=$(find_live_session); then connect_session; exit $?; fi
+    fi
+    session=$base_session
+    [ "$ordinal" -eq 1 ] || session="$base_session-$ordinal"
+    if tmx has-session -t "=$session" 2>/dev/null; then
+        ordinal=$((ordinal + 1)); continue
+    fi
+    args=(new-session -d -s "$session" -n "$agent" -c "$project_dir" "${launch_env[@]}")
+    # Varios argv fuerzan exec directo, también para agentes sin flags YOLO.
+    if [ "$agent" != shell ]; then args+=(/bin/bash -c 'exec "$@"' ai-agent "${cmd[@]}"); fi
+    if launch_error=$(tmx "${args[@]}" 2>&1); then break; fi
+    if ! tmx has-session -t "=$session" 2>/dev/null; then fail "No se pudo crear sesión: $launch_error"; fi
+    ordinal=$((ordinal + 1))
+done
+# set-environment explícito como exige el addendum. -e ya los da al proceso inicial.
+tmx set-environment -t "=$session" AI_PROJECT_DIR "$project_dir" || exit $?
+tmx set-environment -t "=$session" AI_AGENT "$agent" || exit $?
+tmx set-environment -t "=$session" AI_MODE "$session_mode" || exit $?
+connect_session

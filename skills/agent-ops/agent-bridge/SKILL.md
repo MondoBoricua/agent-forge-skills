@@ -446,6 +446,7 @@ status, diff, and required check results; verify the actual flow before acceptan
 | `bridge-verify` | `--worktree <dir> --brief <file> [--run-checks] [--out <json>] [--verifier <family>]` | Evidence; 0 OK, 1 failed, 2 unverified, 3 usage |
 | `bridge-handoff` | Contract operations described above and in the reference | Persistent state and journal |
 | `agent-usage` | `--json`, channel filters | Usage inspection |
+| `ai`, `tm` | `ai [safe|new|resume|plan|auth] <agent>`, `ai status|sessions|shell`; `tm [text]` | Per-folder tmux station in YOLO mode and a window picker (bash, tmux, fzf) |
 | `claude-auto` | Wrapper with `CLAUDE_AUTO_DRY=1` inspection | Conditional continuation based on history and existing processes |
 
 Inspect `claude-auto` before installation: it contains executable-path and permission defaults
