@@ -33,6 +33,25 @@ fish (`~/.config/fish/config.fish`): the same lines, fish accepts this `alias na
 `claude-auto` is the wrapper shipped in `skills/agent-ops/agent-bridge/scripts/`; symlink it into
 `~/.local/bin` or alias `claude` directly to `command claude --dangerously-skip-permissions`.
 
+## 1b. Headless calls (what `agent-bridge` delegation uses)
+
+Aliases only cover the interactive commands. Headless calls in briefs are explicit:
+
+- Codex: put the defaults in `~/.codex/config.toml` so `codex exec` never asks and can write
+  (measured: the header then prints `approval: never` / `sandbox: danger-full-access`):
+
+  ```toml
+  approval_policy = "never"
+  sandbox_mode = "danger-full-access"
+  ```
+
+  Without that, pass `codex exec --dangerously-bypass-approvals-and-sandbox …` per call.
+- Cursor: `cursor-agent -p --trust --force …`
+- agy: `agy --dangerously-skip-permissions -p='…'` (the alias adds it; name it in scripts)
+- zcode: `zcode -p '…'` is yolo by default; `--mode yolo` for the TUI
+- Copilot: `copilot -p '…' --allow-all-tools` (without it, it answers but runs no tools)
+- OpenCode: `opencode run --auto …`
+
 ## 2. `ai` and `tm`
 
 ```bash
