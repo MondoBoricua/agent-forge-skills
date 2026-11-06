@@ -2,20 +2,21 @@
 set -uo pipefail
 
 usage() {
-  printf '%s\n' 'Uso: agent-usage [--json] [--only claude,codex,cursor,agy] [--no-cursor]' \
+  printf '%s\n' 'Uso: agent-usage [--json] [--only claude,codex,cursor,agy,copilot,opencode,zai] [--status] [--no-cursor]' \
     'Consulta cuota usada y reinicio local; --only puede repetirse. Cursor puede tardar ~25 s.'
 }
 json=0; selected=; no_cursor=0
 while (($#)); do
   case "$1" in
     --json) json=1 ;;
+    --status) : ;;
     --no-cursor) no_cursor=1 ;;
     --only)
       shift
       if (($# == 0)) || [[ -z "$1" ]]; then usage >&2; exit 2; fi
       IFS=, read -r -a choices <<< "$1"
       for a in "${choices[@]}"; do
-        case "$a" in claude|codex|cursor|agy) selected="$selected $a" ;; *) usage >&2; exit 2 ;; esac
+        case "$a" in claude|codex|cursor|agy|copilot|opencode|zai) selected="$selected $a" ;; *) usage >&2; exit 2 ;; esac
       done ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
@@ -33,6 +34,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 claude() {
+  if [[ -n "${AGENT_USAGE_CLAUDE_RAW:-}" ]]; then cat -- "$AGENT_USAGE_CLAUDE_RAW"; return; fi
   local token
   token=$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null |
     python3 -I -c 'import json,sys; print(json.load(sys.stdin)["claudeAiOauth"]["accessToken"])' 2>/dev/null) || return 1
@@ -41,6 +43,7 @@ claude() {
     -H 'Content-Type: application/json' https://api.anthropic.com/api/oauth/usage 2>/dev/null
 }
 codex() (
+  if [[ -n "${AGENT_USAGE_CODEX_RAW:-}" ]]; then cat -- "$AGENT_USAGE_CODEX_RAW"; exit; fi
   local child i
   set -m
   ( (printf '%s\n' \
@@ -62,10 +65,20 @@ sys.exit(1)' <"$work/codex.stream"; then exit 0; fi
   done
   exit 1
 )
-agy() { command agy --output-format text -p='/usage' 2>/dev/null; }
+agy() {
+  if [[ -n "${AGENT_USAGE_AGY_RAW:-}" ]]; then cat -- "$AGENT_USAGE_AGY_RAW"
+  else command agy --output-format text -p='/usage' 2>/dev/null; fi
+}
+copilot() {
+  if [[ -n "${AGENT_USAGE_COPILOT_RAW:-}" ]]; then cat -- "$AGENT_USAGE_COPILOT_RAW"
+  else command gh api /copilot_internal/user 2>/dev/null; fi
+}
+opencode() { printf '{}\n'; }
+zai() { printf '{}\n'; }
 cursor() (
+  if [[ -n "${AGENT_USAGE_CURSOR_RAW:-}" ]]; then cat -- "$AGENT_USAGE_CURSOR_RAW"; exit; fi
   cd "$work" || exit 1
-  local session="agentusage$$" pane= i
+  local session="agentusage$$" pane='' i
   # A relative -S socket avoids the macOS Unix socket pathname limit.
   trap 'tmux -S s kill-session -t "$session" 2>/dev/null || :' EXIT
   trap 'exit 143' TERM INT
@@ -87,64 +100,110 @@ cursor() (
 )
 
 normalize() {
-  local raw line key pct reset group period values=() pattern
-  if [[ "$1" == cursor ]]; then
-    raw=; while IFS= read -r line || [[ -n "$line" ]]; do raw+="$line"$'\n'; done
-    pattern='Resets[[:space:]]+([A-Za-z]{3})[[:space:]]+([0-9]{1,2})'
-    [[ "$raw" =~ $pattern ]] && values+=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
-    for key in Included Auto API; do pattern="$key[[:space:]]+([0-9.]+)%[[:space:]]+used"; [[ "$raw" =~ $pattern ]] && values+=("${BASH_REMATCH[1]}"); done
-    pattern='On-Demand[[:space:]]+(Disabled|Enabled)'; [[ "$raw" =~ $pattern ]] && values+=("${BASH_REMATCH[1]}")
-    pattern='Usage[[:space:]]*[•·][[:space:]]*(.*)[[:space:]]+Resets'; [[ "$raw" =~ $pattern ]] && values+=("${BASH_REMATCH[1]}")
-  elif [[ "$1" == agy ]]; then
-    while IFS=$'\t' read -r group period pct reset; do
-      case "$group/$period" in 'Gemini Models/Weekly Limit Remaining') key='Gemini 7 días' ;; 'Gemini Models/Five Hour Limit Remaining') key='Gemini 5 horas' ;; 'Claude and GPT models/Weekly Limit Remaining') key='Claude/GPT 7 días' ;; 'Claude and GPT models/Five Hour Limit Remaining') key='Claude/GPT 5 horas' ;; *) continue ;; esac
-      values+=("$key" "${pct%%%}" "$reset")
-    done
-  fi
-  if [[ "$1" == cursor || "$1" == agy ]]; then
-    printf '%s\n' "${values[@]}" | python3 -I -c 'import json,sys; print(json.dumps(sys.stdin.read().splitlines()))' >"$work/$1.parsed"
-    exec <"$work/$1.parsed"
-  fi
   python3 -I -c '
-import sys,json,datetime as dt,math
+import sys,json,datetime as dt,math,re,os
 agent=sys.argv[1]; raw=sys.stdin.read(); rows=[]; extra={}
+source_file=os.environ.get("AGENT_USAGE_"+agent.upper()+"_RAW")
+observed=None if source_file else dt.datetime.now(dt.timezone.utc)
+measured_now=dt.datetime.now(dt.timezone.utc)
+if source_file and os.environ.get("AGENT_USAGE_TEST_NOW"):
+ measured_now=dt.datetime.fromisoformat(os.environ["AGENT_USAGE_TEST_NOW"].replace("Z","+00:00"))
+ if measured_now.tzinfo is None: raise ValueError("test clock sin zona")
 def iso(v):
- if isinstance(v,(int,float)): d=dt.datetime.fromtimestamp(v,dt.timezone.utc)
- else:
-  d=dt.datetime.fromisoformat(v.replace("Z","+00:00"))
-  if d.tzinfo is None: raise ValueError()
+ if v is None: return None
+ if isinstance(v,(int,float)) and not isinstance(v,bool): d=dt.datetime.fromtimestamp(v,dt.timezone.utc)
+ elif isinstance(v,dt.datetime): d=v
+ else: d=dt.datetime.fromisoformat(str(v).replace("Z","+00:00"))
+ if d.tzinfo is None: raise ValueError("reset sin zona")
  return d.astimezone().isoformat()
-def row(name,pct,reset):
- pct=float(pct)
- if not math.isfinite(pct) or not 0<=pct<=100: raise ValueError()
- rows.append(dict(window=name,used_pct=pct,resets_at=iso(reset)))
-def window(n):
- return {300:"5 horas",10080:"7 días"}.get(n,str(n)+" min")
+def row(bucket,name,pct=None,reset=None,reason="",state=None,**fields):
+ if pct is not None:
+  if isinstance(pct,bool): raise ValueError()
+  pct=float(pct)
+  if not math.isfinite(pct) or not 0<=pct<=100: raise ValueError()
+ state=state or ("unknown" if pct is None else "exhausted" if pct>=85 else "available")
+ reset=iso(reset)
+ if reset and dt.datetime.fromisoformat(reset)<=measured_now:
+  state="unknown"; reason="reinicio vencido: volver a medir"; pct=None
+ rows.append(dict(agent=agent,bucket=bucket,window=name,used_pct=pct,
+  remaining_pct=None if pct is None else round(100-pct,6),resets_at=reset,state=state,
+  reason=reason,observed_at=iso(observed),**fields))
+def window(n): return {300:"5 horas",10080:"7 días"}.get(n,str(n)+" min")
 try:
+ if source_file and os.environ.get("AGENT_USAGE_OBSERVED_AT"):
+  observed=iso(os.environ["AGENT_USAGE_OBSERVED_AT"])
  if agent=="claude":
   d=json.loads(raw)
-  for k,n in [("five_hour","5 horas"),("seven_day","7 días")]:
-   row(n,d[k]["utilization"],d[k]["resets_at"])
+  names={"five_hour":"5 horas","seven_day":"7 días","seven_day_opus":"7 días Opus","seven_day_sonnet":"7 días Sonnet"}
+  names.update({k:k for k,v in d.items() if k!="extra_usage" and k not in names and isinstance(v,dict) and ("utilization" in v or "resets_at" in v)})
+  for k,n in names.items():
+   v=d.get(k)
+   if v is None:
+    row(k,n,reason="ventana null/ausente: no medida",applicable=k=="seven_day")
+   else:
+    reason=str(v.get("locked_reason") or "")
+    if v.get("spend_limit_reached"): reason=(reason+"; " if reason else "")+"spend_limit_reached"
+    dollars={key:v.get(key) for key in ("limit_dollars","used_dollars","remaining_dollars") if key in v}
+    row(k,n,v.get("utilization"),v.get("resets_at"),reason,"blocked" if reason else None,**dollars)
+  v=d.get("extra_usage") or {}
+  row("extra_usage","extra (informativo)",v.get("utilization"),reason="sin pagos extra; no habilita disponibilidad"+("; spend_limit_reached" if v.get("spend_limit_reached") else ""),
+      state="blocked" if v.get("spend_limit_reached") else "unknown",informational=True,
+      is_enabled=v.get("is_enabled"),spend_limit_reached=v.get("spend_limit_reached"))
  elif agent=="codex":
-  d=json.loads(raw)["result"]; limits=d["rateLimits"]
-  for k in ("primary","secondary"):
-   v=limits.get(k)
-   if v: row(window(v["windowDurationMins"]),v["usedPercent"],v["resetsAt"])
-  extra["reset_credits"]=d.get("rateLimitResetCredits",{}).get("availableCount")
-  extra["plan"]=limits.get("planType")
+  d=json.loads(raw); d=d.get("result",d)
+  limits=dict(d.get("rateLimitsByLimitId") or {})
+  main=d.get("rateLimits")
+  if main: limits.setdefault(main.get("limitId") or "codex",main)
+  for limit_id,limits_row in limits.items():
+   related=main if main and limit_id==(main.get("limitId") or "codex") else {}
+   reasons=[]
+   for scope in (limits_row,related,d):
+    if scope.get("rateLimitReachedType") is not None: reasons.append("rateLimitReachedType="+str(scope["rateLimitReachedType"]))
+    if scope.get("spendControlReached"): reasons.append("spendControlReached")
+   reason="; ".join(dict.fromkeys(reasons))
+   for k in ("primary","secondary"):
+    v=limits_row.get(k)
+    if v is None: row(limit_id,k,reason="ventana null/ausente: no medida",applicable=False)
+    else: row(limit_id,window(v["windowDurationMins"]),v.get("usedPercent"),v.get("resetsAt"),str(reason or ""),"blocked" if reason else None)
+   # Provider-level flags still block even if all windows are null.
+   if reason: row(limit_id,"provider lock",reset=max((v["resetsAt"] for v in (limits_row.get("primary"),limits_row.get("secondary")) if v and v.get("resetsAt") is not None),default=None),reason=str(reason),state="blocked")
+  extra["credits_informational"]=main.get("credits") if main else None
+  extra["plan"]=main.get("planType") if main else None
  elif agent=="cursor":
-  v=json.loads(raw)
-  months="Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
-  now=dt.datetime.now().astimezone()
-  day=dt.date(now.year,months.index(v[0].title())+1,int(v[1]))
-  if day<now.date(): day=day.replace(year=day.year+1)
-  reset=dt.datetime.combine(day,dt.time()).astimezone().isoformat()
-  for name,pct in zip(("Included","Auto","API"),v[2:5]): row(name,pct,reset)
-  extra["on_demand"]=v[5]; extra["plan"]=v[6].strip()
+  now=measured_now.astimezone(); match=re.search(r"Resets\s+([A-Za-z]{3})\s+(\d{1,2})",raw)
+  reset=None
+  if match:
+   months="Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+   day=dt.date(now.year,months.index(match[1].title())+1,int(match[2]))
+   if day<now.date(): day=day.replace(year=day.year+1)
+   reset=dt.datetime.combine(day,dt.time()).astimezone()
+  for bucket in ("Included","Auto","API"):
+   match=re.search(r"\b"+bucket+r"\s+([0-9.]+)%\s+used",raw)
+   row(bucket,"mes",float(match[1]) if match else None,reset,reason="bucket CLI; cuota individual del modelo no medida")
+  match=re.search(r"On-Demand\s+(Disabled|Enabled)",raw)
+  extra["on_demand"]=match[1] if match else "unknown"
+  extra["paid_fallback"]=False
+  extra["reset_precision"]="fecha, hora no publicada" if reset else "unknown"
  elif agent=="agy":
-  v=json.loads(raw)
-  for i in range(0,len(v),3): row(v[i],100-float(v[i+1]),v[i+2])
-  if len(rows)!=4: raise ValueError()
+  for line in raw.splitlines():
+   if "\t" not in line: continue
+   fields=[v.strip() for v in line.split("\t")]
+   if len(fields)!=4 or not all(fields): raise ValueError()
+   group,period,pct,reset=fields
+   if not pct.endswith("%"): raise ValueError()
+   normalized=("7 días" if re.search(r"\bweekly\b",period,re.I) else
+               "5 horas" if re.search(r"\bfive[\s-]+hour\b",period,re.I) else period)
+   row(group,normalized,100-float(pct[:-1]),reset,group=group)
+ elif agent=="copilot":
+  d=json.loads(raw); q=d["quota_snapshots"]["premium_interactions"]
+  reset=d["quota_reset_date"]
+  if re.fullmatch(r"\d{4}-\d{2}-\d{2}",reset): reset=dt.datetime.combine(dt.date.fromisoformat(reset),dt.time()).astimezone()
+  row("premium_interactions","mes",round(100-float(q["percent_remaining"]),4),reset)
+  extra["plan"]=d.get("copilot_plan"); extra["remaining"]=q.get("remaining"); extra["entitlement"]=q.get("entitlement")
+ elif agent in ("opencode","zai"):
+  reason=("opencode stats mide tokens locales, no cuota del proveedor" if agent=="opencode" else
+          "sin fuente local verificable ni endpoint documentado de cuota Z.ai/zcode")
+  row("unknown","unknown",reason=reason)
  if not rows: raise ValueError()
  print(json.dumps(dict(windows=rows,**extra),ensure_ascii=False))
 except Exception:
@@ -152,7 +211,7 @@ except Exception:
 ' "$1"
 }
 
-export -f claude codex cursor agy
+export -f claude codex cursor agy copilot opencode zai
 export work
 timed_query() {
   if command -v timeout >/dev/null 2>&1; then timeout "$2" bash -c "$1"
@@ -169,7 +228,7 @@ run_agent() (
   trap 'exit 143' TERM INT
   (sleep "$seconds"; printf '%s' timeout >"$work/$a.timeout";
     kill -TERM -- "-$child" 2>/dev/null || :; sleep 2;
-    kill -KILL -- "-$child" 2>/dev/null || :) & watch=$!
+    kill -KILL -- "-$child" 2>/dev/null || :) >/dev/null 2>&1 & watch=$!
   wait "$child" 2>/dev/null; rc=$?
   kill "$watch" 2>/dev/null || :
   wait "$watch" 2>/dev/null || :
@@ -182,35 +241,35 @@ run_agent() (
   fi
 )
 agents=()
-for a in claude codex cursor agy; do
+for a in claude codex cursor agy copilot opencode zai; do
   [[ -n "$selected" && " $selected " != *" $a "* ]] && continue
   [[ "$a" == cursor && "$no_cursor" == 1 ]] && continue
   agents+=("$a")
-  case "$a" in claude) seconds=20 ;; codex) seconds=30 ;; *) seconds=60 ;; esac
+  case "$a" in claude|copilot) seconds=20 ;; codex) seconds=30 ;; *) seconds=60 ;; esac
   run_agent "$a" "$seconds" 2>/dev/null & pids+=("$!")
 done
 for p in "${pids[@]}"; do wait "$p" 2>/dev/null || :; done
 pids=()
 python3 -I -c '
 import sys,json,datetime as dt
-root,mode=sys.argv[1:3]; result={}
+root,mode=sys.argv[1:3]; result={}; failed=True
 for a in sys.argv[3:]:
  try:
-  with open(root+"/"+a+".json") as f: result[a]=json.load(f)
- except Exception: result[a]={"error":"consulta fallida"}
+  with open(root+"/"+a+".json") as f: d=json.load(f)
+ except Exception: d={"error":"consulta fallida"}
+ if "error" in d:
+  d["windows"]=[dict(agent=a,bucket="unknown",window="unknown",used_pct=None,remaining_pct=None,resets_at=None,state="unknown",reason=d["error"])]
+ else: failed=False
+ result[a]=d
 if mode=="1": print(json.dumps(result,ensure_ascii=False))
 else:
- lines=[("Agente","Ventana","Usado %","Resetea")]
- names={"claude":"Claude Code","codex":"Codex","cursor":"Cursor","agy":"agy"}
- weekdays="lun mar mié jue vie sáb dom".split(); months="ene feb mar abr may jun jul ago sep oct nov dic".split()
+ lines=[("Agente","Bucket","Ventana","Usado %","Restante %","Resetea","Estado","Motivo")]
+ names={"claude":"Claude Code","codex":"Codex","cursor":"Cursor","agy":"agy","copilot":"Copilot","opencode":"OpenCode","zai":"Z.ai"}
  for a,d in result.items():
-  if "error" in d: lines.append((names[a],"—","n/d ("+d["error"]+")","—")); continue
   for i,w in enumerate(d["windows"]):
-   t=dt.datetime.fromisoformat(w["resets_at"]).astimezone()
-   stamp=f"{weekdays[t.weekday()]} {t.day:02d} {months[t.month-1]} {t:%H:%M}"
-   pct=w["used_pct"]
-   lines.append((names[a] if i==0 else "",w["window"],f"{pct:g}%",stamp))
- widths=[max(len(r[i]) for r in lines) for i in range(4)]
+   pct=lambda v: "n/d" if v is None else f"{v:g}%"
+   lines.append((names[a] if i==0 else "",w["bucket"],w["window"],pct(w["used_pct"]),pct(w["remaining_pct"]),w["resets_at"] or "—",w["state"],w["reason"]))
+ widths=[max(len(r[i]) for r in lines) for i in range(8)]
  for r in lines: print(" | ".join(v.ljust(widths[i]) for i,v in enumerate(r)).rstrip())
-sys.exit(0 if any("windows" in d for d in result.values()) else 1)
+sys.exit(1 if failed else 0)
 ' "$work" "$json" "${agents[@]}"

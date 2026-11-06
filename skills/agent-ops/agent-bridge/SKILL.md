@@ -3,7 +3,7 @@ name: agent-bridge
 description: >-
   Multi-agent delegation and communication for Claude, Cursor, Codex, and agy. Use for closed briefs,
   isolated worktrees, cross-review, status requests, or "mándale esto al otro agente". Covers live
-  sessions, headless CLIs, tmux, SSH, and Bridge 2.0 identity, handoff, and verification.
+  sessions, headless CLIs, tmux, SSH, quota-aware model selection, and Bridge 2.0 identity, handoff, and verification.
 ---
 
 # Agent bridge
@@ -18,8 +18,9 @@ result is a hypothesis until the receiving coordinator verifies it.
 |---|---|---|---|
 | Native peer listing and messaging, such as `ListAgents` / `SendMessage` | Peers supported by that runtime | Existing thread | Use its completion notification or wait tool |
 | `cursor-agent -p`, `codex exec`, `agy -p=` | New local agent | Full context must be in the brief | Read stdout, report, and exit status |
+| `copilot -p` | New local agent (GitHub Copilot CLI) | Single prompt; without `--allow-all-tools` it answers but runs no tools; optional `--add-dir` | Read JSONL result or stdout |
 | `tmux send-keys` / `capture-pane` | Existing TUI session | Existing thread | Capture the pane; no push notification |
-| `/usr/bin/ssh` plus `claude -p` | Remote account or machine | New brief, or explicitly resumed context | Collect JSON output and exit status |
+| `/usr/bin/ssh` plus headless agent | Remote server or device | New brief, or explicitly resumed context | Collect stdout/JSON output and exit status |
 
 Peer tools only list agents in their supported runtime and account. An absent peer entry does
 not prove that an unrelated CLI or remote session is absent.
@@ -37,9 +38,31 @@ evidence, and integrate. Delegate mechanical execution. Take over after two cons
 verification failures on the same brief, or when a decision requires the coordinator's judgment.
 An executor follows its assigned scope and does not take over root coordination.
 
-Select destinations in this order: authorized scope, required tools and permissions, working
-transport, known authentication or explicit `unknown`, then known available quota. Unknown quota
-is not free quota. Do not route by anecdotal model scores.
+### Selection policy
+
+No agent or model should be a permanent favorite; explicit user preferences take precedence,
+accompanied by a warning if the chosen route has constraints. Before selecting, measure quota
+(`agent-usage`), check the repository delegation log, and apply the task-class table below. The
+`bridge-models select` helper that automates this ranking is not bundled yet (see
+"Shared benchmark and model selection"); its interface looks like:
+
+```bash
+bridge-models select --class intermediate --host <host>
+bridge-models select --class review --host <host> --executor codex --usage usage.json
+bridge-models select --class intermediate --host <host> --prefer cursor:<model>
+```
+
+| Task class | Selection guideline |
+|---|---|
+| `trivial` | Direct execution by default; `--separable` can select an economical session subagent if plan buckets are measured and usable |
+| `intermediate` | Economical external models compete with session subagents; external usage below 50% wins; unknown quota is never free; ties resolve by accepted history, then cost |
+| `complex` | High-capability models; native expensive models require explicit justification (`--justify`) or user preference |
+| `audit`, `review` | Independent reviewer on a distinct channel from the executor; never self-approval |
+
+Quota bands: `<50%` (usable), `50%–<85%` (acceptable, watch it), `≥85%` (stopped / blocked).
+Unknown quota is not free quota. An active provider limit or local block (`bridge-models block`)
+excludes the model without silent substitution. A per-machine launcher script can wrap the
+individual channels and tmux sessions.
 
 ## Isolate and close the brief
 
@@ -122,6 +145,12 @@ If a sandbox prevents reliable identity observation, the coordinator supplies th
 logs, or the persistent brief. It authorizes executor mutations, not identity or independence.
 Coordinator and verifier operations must not use a token.
 
+For tasks scoped purely to a remote host or external environment without a local repository diff,
+use `repo_scope: "none"` in the handoff contract so Git baseline inspection is bypassed while
+still requiring readable non-directory expected artifacts and passing required checks.
+Unmodified preexisting untracked files are captured in `baseline_untracked` at creation and do not
+count as scope violations. State writes are verified atomically by re-reading and parsing before rename.
+
 The contract records ownership and prevents overlapping active briefs for the same repository
 unless overlap is explicitly authorized. Revisions prevent stale writes; request IDs support
 idempotent replay. Respect lock errors and do not force-unlock a live process. Journal effects
@@ -139,7 +168,7 @@ Inspect installed CLI documentation and permissions before invoking these exampl
 
 ```bash
 codex exec --skip-git-repo-check -C "$TASK_DIR" -m gpt-6.1-sol \
-  -c model_reasoning_effort=medium -o "$TASK_DIR/REPORT.md" - < "$TASK_DIR/brief.md"
+  -c model_reasoning_effort=medium -o "$TASK_DIR/final-message.md" - < "$TASK_DIR/brief.md"
 cursor-agent -p --mode ask --output-format text "Read-only question"
 cursor-agent -p --trust --force --output-format stream-json --stream-partial-output \
   --model grok-4.7-medium-fast "$(cat "$TASK_DIR/brief.md")"
@@ -295,6 +324,32 @@ network failures. Follow [zcode-epipe.md](references/zcode-epipe.md) for isolate
 backup, regression, rollback, and explicit approval before altering signed application resources.
 Past authorization never authorizes a future signed-app edit.
 
+### GitHub Copilot CLI
+
+Use `copilot -p "$(cat "$TASK_DIR/brief.md")" -s --allow-all-tools -C "$TASK_DIR" --output-format json > "$TASK_DIR/out.jsonl"`.
+Each `-p` invocation consumes a premium request from the plan. It is a marginal channel suited for
+small, closed briefs rather than multi-round reviews.
+Traps to observe:
+- Paths outside the working directory are denied by default unless passed via `--add-dir <dir>` or `--allow-all-paths`.
+- Shells spawned under Copilot CLI can cause conflicting identity signals in `bridge-whoami`; pass `caller_agent` or an execution token in the brief.
+- Session resumption flags (`--resume`/`--continue`) operate globally rather than per directory.
+
+### Remote headless agent on a homelab host
+
+When delegating to an agent running on an internal or homelab server over SSH:
+- Verify transport reachability and agent status with noninteractive commands before sending work.
+- Transfer the closed brief via `scp`, execute the agent headlessly under a timeout, and retrieve artifacts with `scp` for local inspection.
+- For host-only or non-repository tasks, use `repo_scope: "none"` in the handoff contract.
+- If the remote agent is unreachable, record an informed block; never substitute an unrelated local agent silently.
+- Acceptance belongs to the local coordinator or an independent reviewer after verifying stdout and retrieved artifacts.
+
+### Phone and handheld device agents
+
+When delegating tasks to agents hosted on a phone (such as Termux) or a handheld device:
+- Work meant for that device runs on the device's own agents; the device-hosted agent maintains its own persistent sessions and environment.
+- Run headless sessions via SSH with explicit `PATH` and project directory configuration rather than interactive wrappers.
+- Do not mirror sessions across architectures; keep device-local session logs on that device.
+
 ## Independent cross-review and escalation
 
 For destructive, server, authentication, or deployment code, obtain at least two independent
@@ -311,9 +366,40 @@ brief and code, without the other reviewers' findings in the first round.
    After three nonconverging rounds, stop and provide the human with the state and open decision.
 6. End when remaining differences are nonblocking nuance, recording known limits and the decision.
 
+### Measured execution traps
+
+- `codex exec -o <file>` overwrites `<file>` with the agent's final message. Always point `-o` to a
+  distinct filename (e.g. `final-message.md`) that the brief does not instruct the agent to write.
+- Measured once with agy: a ~4 KB brief inlined as `-p="$(cat brief.md)"` ended with an empty log and
+  no deliverable, cause not identified. Store long briefs in a file and pass the path in the prompt.
+- In parallel reviews, assign distinct output filenames per reviewer and poll by process name or PID
+  rather than directory-name matches.
+- Subagents in some harnesses are restricted from writing files outside their assigned worktree;
+  keep deliverable text in the final report message and let the coordinator move it if needed.
+- Sequential worktree merges that regenerate project files can conflict repeatedly; resolve by
+  regenerating the clean project file and validating tests before committing the merge.
+
 Record one durable log line per closed brief: agent, model, elapsed time, accepted / correction /
 escalated / discarded, and the concrete failure or limitation. Derive future routing from measured
 results rather than private anecdotes or fixed model stereotypes.
+
+## Shared benchmark and model selection (`bridge-models`)
+
+Selection is a measurement, not a habit: no permanent favorite channel and no artificial rotation.
+Before delegating, combine three inputs: public benchmark data (LLMBenchmark.ai publishes a daily
+dataset under CC BY 4.0 that maps model ids to coding, agentic, terminal and speed scores), the live
+quota of every channel (`agent-usage`), and the recorded outcome of earlier delegations. Rank by
+host and capability first, then by quota band (<50 % free to use, 50-85 % use with care, >=85 %
+or a recorded `quota reached` stops the send until the window resets and a new measurement is
+taken), then by accepted history, then by cost. Unknown quota is not free quota: send there only on
+an explicit preference, and say so. The reviewer channel must differ from the executor channel, and
+an explicit user preference wins but is reported with its quota warning.
+
+A `bridge-models` helper implements this policy (benchmark sync, `top`,
+`recommend`, `select --class trivial|intermediate|complex|audit|review --host <host>`, local
+`block`/`unblock` records, and a `--local` filter that estimates which open-weight models fit a
+VRAM/RAM budget recorded in a local config). It is not in this public bundle yet because its host
+taxonomy is tied to one setup.
 
 ## Quota inspection
 

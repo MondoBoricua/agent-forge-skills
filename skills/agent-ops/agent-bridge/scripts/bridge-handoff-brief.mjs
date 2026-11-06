@@ -25,11 +25,11 @@ export function loadBriefFile(briefPath) {
 /** Reemplaza el bloque JSON conservando el resto del markdown. */
 export function embedContractInMarkdown(markdown, contract) {
   const json = JSON.stringify(contract, null, 2);
-  const re = /```json\s*[\s\S]*?```/i;
+  const re = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*(?=\r?\n|$)/im;
   if (!re.test(markdown)) {
     return `${markdown.trim()}\n\n## Contrato (JSON)\n\n\`\`\`json\n${json}\n\`\`\`\n`;
   }
-  return markdown.replace(re, `\`\`\`json\n${json}\n\`\`\``);
+  return markdown.replace(re, () => `\`\`\`json\n${json}\n\`\`\``);
 }
 
 export function writeBriefAtomic(briefPath, markdown, contract) {
@@ -38,9 +38,14 @@ export function writeBriefAtomic(briefPath, markdown, contract) {
   mkdirSync(dirname(briefPath), { recursive: true });
   const body = embedContractInMarkdown(markdown, contract);
   try {
-    writeAtomicDurable(briefPath, body);
+    writeAtomicDurable(briefPath, body, (written) => {
+      const parsed = extractContractJson(written);
+      if (parsed.error || !validateHandoffContract(parsed.contract).ok) {
+        throw new Error('invalid_serialized_brief');
+      }
+    });
     return { ok: true };
-  } catch {
-    return { error: 'write_failed' };
+  } catch (e) {
+    return { error: e.message === 'invalid_serialized_brief' ? e.message : 'write_failed' };
   }
 }

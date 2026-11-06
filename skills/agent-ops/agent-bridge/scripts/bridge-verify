@@ -4,8 +4,9 @@
  * acceptance queda siempre pending; el ejecutor no se auto-aprueba.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve, basename } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join, resolve, basename } from 'node:path';
+import { writeAtomicDurable } from './bridge-handoff-durable.mjs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { resolveIdentity } from './bridge-whoami';
@@ -65,7 +66,7 @@ const REQUIRED_TOP = [
 
 /** Extrae el primer bloque ```json del markdown. */
 export function extractContractJson(markdown) {
-  const re = /```json\s*([\s\S]*?)```/i;
+  const re = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*(?=\r?\n|$)/im;
   const m = markdown.match(re);
   if (!m) return { error: 'no_json_block' };
   try {
@@ -106,6 +107,12 @@ export function validateContract(contract) {
   if (contract.schema_version !== 1) return { ok: false, reason: 'schema_version' };
   if (contract.task_id === contract.execution_id) return { ok: false, reason: 'task_eq_execution' };
   if (!isNonNegInt(contract.delegation_depth)) return { ok: false, reason: 'delegation_depth' };
+  if (contract.repo_scope !== undefined && !['local', 'none'].includes(contract.repo_scope)) {
+    return { ok: false, reason: 'repo_scope' };
+  }
+  if (contract.baseline_untracked !== undefined && !isStringArray(contract.baseline_untracked)) {
+    return { ok: false, reason: 'baseline_untracked' };
+  }
   if (!isNonNegInt(contract.recovery_count)) return { ok: false, reason: 'recovery_count' };
   if (!isNonNegInt(contract.round_count)) return { ok: false, reason: 'round_count' };
   const lim = contract.limits;
@@ -189,7 +196,7 @@ function parseNulPaths(stdout) {
 }
 
 /** Porcelain v1 -z: renombres traen dos rutas seguidas. */
-export function parsePorcelainZ(stdout) {
+export function parsePorcelainZ(stdout, baselineUntracked = []) {
   const files = new Set();
   const parts = stdout.split('\0').filter((p) => p.length > 0);
   let i = 0;
@@ -199,6 +206,7 @@ export function parsePorcelainZ(stdout) {
     if (line.length < 4) continue;
     const xy = line.slice(0, 2);
     const pathPart = line.slice(3);
+    if (xy === '??' && baselineUntracked.includes(pathPart)) continue;
     if (xy[0] === 'R' || xy[1] === 'R') {
       if (i < parts.length) {
         files.add(parts[i]);
@@ -212,7 +220,7 @@ export function parsePorcelainZ(stdout) {
 }
 
 /** Inspección git; cualquier fallo → ok:false. */
-export function inspectGitWorktree(worktree, baseline) {
+export function inspectGitWorktree(worktree, baseline, baselineUntracked = []) {
   const isRepo = runGit(worktree, ['rev-parse', '--git-dir']);
   if (isRepo.code !== 0) {
     return { ok: false, inspection_error: gitInspectFailure('rev-parse --git-dir', isRepo) };
@@ -247,7 +255,7 @@ export function inspectGitWorktree(worktree, baseline) {
   const files = new Set([
     ...parseNulPaths(diffNames.stdout),
     ...parseNulPaths(unstaged.stdout),
-    ...parsePorcelainZ(status.stdout),
+    ...parsePorcelainZ(status.stdout, baselineUntracked),
   ]);
   return {
     ok: true,
@@ -258,8 +266,19 @@ export function inspectGitWorktree(worktree, baseline) {
   };
 }
 
-export function listChangedFiles(worktree, baseline) {
-  const insp = inspectGitWorktree(worktree, baseline);
+/** Snapshot del estado previo al encargo; NUL preserva nombres con saltos de línea. */
+export function captureRepoBaseline(worktree) {
+  const head = runGit(worktree, ['rev-parse', 'HEAD']);
+  const untracked = runGit(worktree, ['ls-files', '--others', '--exclude-standard', '-z']);
+  if (head.code !== 0 || untracked.code !== 0) return { error: 'baseline_capture_failed' };
+  return {
+    baseline_head: head.stdout.trim(),
+    baseline_untracked: parseNulPaths(untracked.stdout).filter((p) => !p.endsWith('.lock')).sort(),
+  };
+}
+
+export function listChangedFiles(worktree, baseline, baselineUntracked = []) {
+  const insp = inspectGitWorktree(worktree, baseline, baselineUntracked);
   if (!insp.ok) return { ok: false, inspection_error: insp.inspection_error, changed_files: [] };
   return { ok: true, changed_files: insp.changed_files };
 }
@@ -298,6 +317,8 @@ export function artifactStatus(worktree, baseline, relPath, gitRun = null) {
     return { path: relPath, state: 'missing' };
   }
   const current = readFileSync(abs);
+  // Sin scope de repo solo se comprueba entrega/lectura, sin consultar Git.
+  if (baseline === null) return { path: relPath, state: 'delivered', hash: fileHash(current) };
   const existedAtBaseline = run(['cat-file', '-e', `${baseline}:${relPath}`]);
   if (existedAtBaseline.code !== 0) {
     return { path: relPath, state: 'delivered', hash: fileHash(current) };
@@ -397,12 +418,13 @@ export function buildVerificationReport({
   artifactGitRun = null,
 }) {
   const baseline = contract.baseline_head;
+  const repoSkipped = contract.repo_scope === 'none';
   const { insp, inspectionOk, changed, artifacts } = inspectWorktreeAndArtifacts({
     worktree,
-    baseline,
+    baseline: repoSkipped ? null : baseline,
     expectedArtifacts: contract.expected_artifacts,
-    gitInspection,
-    inspectGitWorktree,
+    gitInspection: repoSkipped ? { ok: true, head: null, diff_stat: null, status_porcelain: null, changed_files: [] } : gitInspection,
+    inspectGitWorktree: (wt, base) => inspectGitWorktree(wt, base, contract.baseline_untracked),
     artifactStatus,
     artifactGitRun,
   });
@@ -417,7 +439,7 @@ export function buildVerificationReport({
     declared: verifierDeclared,
     executor,
   });
-  const noop = inspectionOk ? computeNoop(changed, contract) : false;
+  const noop = inspectionOk && !repoSkipped ? computeNoop(changed, contract) : false;
   const checks_status = computeChecksStatus(runChecks, contract.required_checks);
   const verdict = computeVerificationVerdict({
     inspectionOk,
@@ -429,7 +451,7 @@ export function buildVerificationReport({
     artifacts,
     noop,
   });
-  return assembleVerificationReportBody({
+  const report = assembleVerificationReportBody({
     SCHEMA_VERSION,
     verdict,
     delivery,
@@ -449,23 +471,17 @@ export function buildVerificationReport({
     limit_violations,
     noop,
   });
+  if (repoSkipped) {
+    report.repo_scope = 'none';
+    report.git.skipped = true;
+    report.git.skip_reason = 'repo_scope=none';
+    report.verification_note = `${report.verification_verdict} (repo_scope=none)`;
+  }
+  return report;
 }
 
 export function writeAtomic(targetPath, content) {
-  const dir = dirname(targetPath);
-  const tmp = join(dir, `.${basename(targetPath)}.tmp.${process.pid}`);
-  writeFileSync(tmp, content, 'utf8');
-  try {
-    renameSync(tmp, targetPath);
-  } catch (e) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      /* ignorar limpieza */
-    }
-    throw e;
-  }
-  return tmp;
+  return writeAtomicDurable(targetPath, content);
 }
 
 function printUsage() {
@@ -542,7 +558,7 @@ function loadBriefContract(briefPath) {
 function emitReport(report, { jsonOut, outPath }) {
   const text = JSON.stringify(report, null, jsonOut ? 2 : 0);
   if (outPath) writeAtomic(resolve(outPath), `${text}\n`);
-  process.stdout.write(`${jsonOut ? text : `${report.verification_verdict} delivery=${report.delivery}\n`}`);
+  process.stdout.write(`${jsonOut ? text : `${report.verification_note ?? report.verification_verdict} delivery=${report.delivery}\n`}`);
 }
 
 function exitForVerdict(verdict) {

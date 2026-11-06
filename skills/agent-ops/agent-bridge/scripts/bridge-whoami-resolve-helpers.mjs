@@ -16,6 +16,7 @@ export const COMM_RULES = [
   [/^opencode$/i, 'opencode'],
   [/^gemini$/i, 'gemini'],
   [/^dsh$/i, 'deepseek'],
+  [/^copilot$/i, 'copilot'],
 ];
 
 export const NODE_SCRIPT_RULES = [

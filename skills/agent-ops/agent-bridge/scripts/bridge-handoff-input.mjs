@@ -21,6 +21,7 @@ export const RETRY_ROUND_INPUT_KEYS = [
   'deadline',
   'verifier_agent',
   'executor_agent',
+  'repo_scope',
 ];
 
 export function pickRetryRoundInput(input) {

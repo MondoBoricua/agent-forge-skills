@@ -7,7 +7,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 const TOKEN_BYTE_LEN = 32;
 const ENV_TOKEN = 'BRIDGE_EXECUTION_TOKEN';
 
-/** Generate plaintext token (emitted once) + sha256 hex for the contract. */
+/** Genera par token en claro (una sola emisión) + sha256 hex para el contrato. */
 export function generateExecutionTokenPair() {
   const raw = randomBytes(TOKEN_BYTE_LEN);
   const token = raw.toString('base64url');

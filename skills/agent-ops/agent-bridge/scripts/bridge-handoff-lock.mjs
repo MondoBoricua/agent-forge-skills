@@ -34,6 +34,7 @@ export function acquireLock(lockPath) {
     const fd = openSync(lockPath, 'wx');
     try {
       writeFileSync(fd, body, 'utf8');
+      JSON.parse(readFileSync(lockPath, 'utf8'));
       closeSync(fd);
       return { ok: true, token, path: lockPath };
     } catch (writeErr) {

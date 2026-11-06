@@ -4,7 +4,7 @@
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { buildVerificationReport, runRequiredChecks } from './bridge-verify';
+import { buildVerificationReport, captureRepoBaseline, runRequiredChecks } from './bridge-verify';
 import { loadBriefFile, writeBriefAtomic } from './bridge-handoff-brief.mjs';
 import { acquireLock, releaseLock, forceUnlock } from './bridge-handoff-lock.mjs';
 import {
@@ -40,12 +40,12 @@ import {
   computeEventId,
   buildLogLine,
   logDateForIso,
-  readEventIds,
-  appendEvent,
+  readEventIds as readJournalEventIds,
+  appendEvent as appendJournalEvent,
   appendLogLine,
-  repairJournalTail,
+  repairJournalTail as repairJournalTailUnsafe,
   logHasExecutionMarker,
-  findCreatedTaskByRequest,
+  findCreatedTaskByRequest as findCreatedTaskByRequestUnsafe,
 } from './bridge-handoff-journal.mjs';
 import { pickRetryRoundInput, assertAncestryNoCycle } from './bridge-handoff-input.mjs';
 import {
@@ -74,6 +74,26 @@ function fail(code, message, extra = {}) {
   return { ok: false, exit: code, error: message, ...extra };
 }
 
+/** Etiqueta solamente fallos de journal; los hooks y errores de lógica siguen propagándose. */
+function guardJournal(operation) {
+  return (...args) => {
+    try {
+      return operation(...args);
+    } catch (cause) {
+      throw Object.assign(new Error('journal_write_failed', { cause }), { bridgeJournalError: true });
+    }
+  };
+}
+
+const readEventIds = guardJournal(readJournalEventIds);
+const appendEvent = guardJournal(appendJournalEvent);
+const repairJournalTail = guardJournal(repairJournalTailUnsafe);
+const findCreatedTaskByRequest = guardJournal(findCreatedTaskByRequestUnsafe);
+
+function journalFailure(error) {
+  return fail(2, 'journal_write_failed', { errno: error.cause?.code ?? null, message: error.cause?.message });
+}
+
 function okResult(data) {
   return { ok: true, exit: 0, ...data };
 }
@@ -85,7 +105,7 @@ export function ensureHandoffDataDirs(root) {
   }
 }
 
-/** The plaintext token must not persist in contract requests. */
+/** El token en claro no debe persistirse en requests del contrato. */
 function resultForRequests(result) {
   if (!result || typeof result !== 'object') return result;
   const { execution_token, ...rest } = result;
@@ -124,6 +144,9 @@ function withLocks(root, briefFile, fn) {
   }
   try {
     return fn({ jLock, jToken: j.token, bLock, bToken: b.token });
+  } catch (error) {
+    if (error?.bridgeJournalError) return journalFailure(error);
+    throw error;
   } finally {
     releaseLock(bLock, b.token);
     releaseLock(jLock, j.token);
@@ -329,7 +352,7 @@ function baseInputContract(input, root, repoKey, family) {
     caller_agent: family,
     coordinator_agent: family,
     executor_agent: input.executor_agent,
-    delegation_depth: 0,
+    delegation_depth: input.delegation_depth === undefined ? 0 : input.delegation_depth,
     recovery_count: 0,
     round_count: 0,
     limits: { max_depth: 2, max_recoveries: 2, max_rounds: 3 },
@@ -348,7 +371,8 @@ function baseInputContract(input, root, repoKey, family) {
     repo_root: root,
     worktree: input.worktree || root,
     branch: input.branch || 'main',
-    baseline_head: input.baseline_head || '',
+    baseline_head: input.repo_scope === 'none' ? '' : input.baseline_head || '',
+    ...(input.repo_scope !== undefined ? { repo_scope: input.repo_scope } : {}),
     expected_artifacts: input.expected_artifacts ?? [],
     required_checks: input.required_checks ?? [],
     completion_criteria: input.completion_criteria || '',
@@ -475,6 +499,13 @@ export function handoffNew({
     return fail(3, 'invalid_input');
   }
   if (!input.executor_agent || !input.objective) return fail(3, 'input_missing_fields');
+  if (input.delegation_depth !== undefined &&
+      (!Number.isInteger(input.delegation_depth) || input.delegation_depth < 0 || input.delegation_depth > 2)) {
+    return fail(3, 'invalid_delegation_depth');
+  }
+  if (input.repo_scope !== undefined && !['local', 'none'].includes(input.repo_scope)) {
+    return fail(3, 'invalid_repo_scope');
+  }
   if (!validateScopePaths(input.allowed_files ?? [])) return fail(3, 'invalid_scope_paths');
 
   const repoKeyRes = resolveRepoKey(root);
@@ -527,6 +558,11 @@ export function handoffNew({
       ts,
     });
     const child = baseInputContract(input, root, repoKeyRes.repoKey, family);
+    if (child.repo_scope !== 'none') {
+      const baseline = captureRepoBaseline(child.worktree);
+      if (baseline.error) return fail(2, baseline.error);
+      Object.assign(child, baseline);
+    }
     child.parent_task_id = parentTaskId;
     child.coordinator_agent = p.coordinator_agent;
     child.delegation_depth = p.delegation_depth + 1;
@@ -584,6 +620,14 @@ export function handoffNew({
     }
 
     const allowedInput = pickRetryRoundInput(input);
+    // Primera base local únicamente: la evidencia del task sobrevive retry/round.
+    // Capturar antes de applyMutation evita fotografiar los locks de la mutación.
+    let firstLocalBaseline = null;
+    if (p.repo_scope === 'none' && !p.baseline_head &&
+        (allowedInput.repo_scope ?? p.repo_scope) !== 'none') {
+      firstLocalBaseline = captureRepoBaseline(p.worktree);
+      if (firstLocalBaseline.error) return fail(2, firstLocalBaseline.error);
+    }
     const roundPaths = allowedInput.allowed_files ?? p.allowed_files;
     const roundConflicts = findOwnershipConflicts(root, repoKeyRes.repoKey, roundPaths, taskId);
     if (roundConflicts.length && !allowOverlap) {
@@ -665,6 +709,7 @@ export function handoffNew({
           updated_at: ts,
           allow_overlap_recorded: allowOverlap || c.allow_overlap_recorded,
         };
+        if (firstLocalBaseline) Object.assign(next, firstLocalBaseline);
         const v = validateHandoffContract({ ...next, revision: expectRevision + 1 });
         if (!v.ok) return fail(3, 'invalid_contract', { detail: v });
         return {
@@ -686,6 +731,11 @@ export function handoffNew({
   }
 
   const base = baseInputContract(input, root, repoKeyRes.repoKey, family);
+  if (base.repo_scope !== 'none') {
+    const baseline = captureRepoBaseline(base.worktree);
+    if (baseline.error) return fail(2, baseline.error);
+    Object.assign(base, baseline);
+  }
   base.allow_overlap_recorded = Boolean(allowOverlap);
   const tok = attachExecutionToken(base);
   const contract = tok.contract;
@@ -846,7 +896,7 @@ export function handoffStatusSet({
           return fail(4, 'revision_mismatch', { expected: expectRevision, actual: readRev, inspectedRev });
         }
         const headAtInspect = verificationReport.git?.head;
-        const headNow = gitHead(c.worktree);
+        const headNow = c.repo_scope === 'none' ? null : gitHead(c.worktree);
         if (headAtInspect && headNow !== headAtInspect) {
           return fail(4, 'head_changed', { inspected: headAtInspect, current: headNow });
         }
@@ -860,6 +910,9 @@ export function handoffStatusSet({
           verifier_context: identity,
           worktree_head: headAtInspect ?? headNow,
           inspected_head: headAtInspect,
+          ...(c.repo_scope === 'none' ? {
+            repo_scope: 'none', note: verificationReport.verification_note,
+          } : {}),
         };
       }
 
@@ -935,6 +988,8 @@ export function handoffStatusSet({
           status: state,
           revision: expectRevision + 1,
           independence,
+          ...(state === 'verified' && verificationReport?.verification_note
+            ? { verification_note: verificationReport.verification_note } : {}),
         },
       };
     },
@@ -1103,6 +1158,9 @@ export function handoffUnlock({ root, taskId, force, identity, requestId, expect
     const w = writeBriefAtomic(briefFile, loaded.markdown, withReq);
     if (w.error) return fail(2, w.error, { contract: c });
     return okResult({ contract: withReq, result });
+  } catch (error) {
+    if (error?.bridgeJournalError) return journalFailure(error);
+    throw error;
   } finally {
     releaseLock(jLock, j.token);
   }

@@ -18,8 +18,8 @@ import {
 
 const FULL_CONTRACT = {
   schema_version: 1,
-  task_id: ['a'.repeat(8), ...Array(3).fill('a'.repeat(4)), 'a'.repeat(12)].join('-'),
-  execution_id: ['b'.repeat(8), ...Array(3).fill('b'.repeat(4)), 'b'.repeat(12)].join('-'),
+  task_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  execution_id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
   parent_task_id: null,
   caller_agent: 'cursor',
   coordinator_agent: 'cursor',

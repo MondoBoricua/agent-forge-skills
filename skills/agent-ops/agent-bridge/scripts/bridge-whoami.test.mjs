@@ -61,7 +61,7 @@ describe('bridge-whoami resolveIdentity', () => {
       { pid: 20, ppid: 19, comm: 'node' },
       { pid: 19, ppid: 1, comm: 'zsh' },
     ]);
-    const nodeArgs = new Map([[20, 'node /home/alice/.zcode/runtime/current/bin/zcode.mjs -p hi']]);
+    const nodeArgs = new Map([[20, 'node /home/user/.zcode/runtime/current/bin/zcode.mjs -p hi']]);
     const r = resolveIdentity({
       psTable: ps,
       startPid: 20,
@@ -109,14 +109,14 @@ describe('bridge-whoami resolveIdentity', () => {
   it('macOS: rutas completas en comm — cadena zsh→claude→tmux (medida)', () => {
     const ps = tableFromRows([
       { pid: 57028, ppid: 92160, comm: '/bin/zsh' },
-      { pid: 92160, ppid: 28208, comm: '/home/alice/.local/bin/claude' },
+      { pid: 92160, ppid: 28208, comm: '/home/user/.local/bin/claude' },
       { pid: 28208, ppid: 1, comm: 'tmux' },
     ]);
     const r = resolveIdentity({
       psTable: ps,
       startPid: 57028,
       env: { CLAUDE_CODE_SESSION_ID: 'sess-claude' },
-      tmux: { pane_id: '%1', tmux_session: 'example-session' },
+      tmux: { pane_id: '%1', tmux_session: 'work' },
     });
     assert.equal(r.agent_family, 'claude');
     assert.equal(r.confidence, 'high');
@@ -125,8 +125,8 @@ describe('bridge-whoami resolveIdentity', () => {
 
   it('macOS: comm con ruta a cursor-agent', () => {
     const ps = tableFromRows([
-      { pid: 100, ppid: 99, comm: '/home/alice/.nvm/versions/node/v22.23.2/bin/node' },
-      { pid: 99, ppid: 1, comm: '/home/alice/.local/bin/cursor-agent' },
+      { pid: 100, ppid: 99, comm: '/home/user/.nvm/versions/node/v22.23.2/bin/node' },
+      { pid: 99, ppid: 1, comm: '/home/user/.local/bin/cursor-agent' },
     ]);
     const r = resolveIdentity({ psTable: ps, startPid: 100, env: {} });
     assert.equal(r.agent_family, 'cursor');
@@ -134,13 +134,13 @@ describe('bridge-whoami resolveIdentity', () => {
 
   it('macOS: node con ruta completa y args zcode.mjs', () => {
     const ps = tableFromRows([
-      { pid: 20, ppid: 19, comm: '/home/alice/.nvm/versions/node/v22.23.2/bin/node' },
+      { pid: 20, ppid: 19, comm: '/home/user/.nvm/versions/node/v22.23.2/bin/node' },
       { pid: 19, ppid: 1, comm: '/bin/zsh' },
     ]);
     const nodeArgs = new Map([
       [
         20,
-        'node /home/alice/.zcode/runtime/current/bin/zcode.mjs --json',
+        'node /home/user/.zcode/runtime/current/bin/zcode.mjs --json',
       ],
     ]);
     const r = resolveIdentity({
@@ -169,13 +169,26 @@ describe('bridge-whoami resolveIdentity', () => {
 
   it('macOS: anidado claude→codex con rutas completas; gana codex', () => {
     const ps = tableFromRows([
-      { pid: 1, ppid: 2, comm: '/home/alice/.nvm/versions/node/v22.23.2/bin/node' },
+      { pid: 1, ppid: 2, comm: '/home/user/.nvm/versions/node/v22.23.2/bin/node' },
       { pid: 2, ppid: 3, comm: '/bin/zsh' },
-      { pid: 3, ppid: 4, comm: '/home/alice/.local/bin/codex' },
-      { pid: 4, ppid: 5, comm: '/home/alice/.local/bin/claude' },
+      { pid: 3, ppid: 4, comm: '/home/user/.local/bin/codex' },
+      { pid: 4, ppid: 5, comm: '/home/user/.local/bin/claude' },
     ]);
     const r = resolveIdentity({ psTable: ps, startPid: 1, env: {} });
     assert.equal(r.agent_family, 'codex');
+    assert.ok(r.signals.some((s) => s.value === 'claude'));
+  });
+
+  it('copilot → bash → node (anidado bajo claude): gana copilot', () => {
+    const ps = tableFromRows([
+      { pid: 30, ppid: 29, comm: 'node' },
+      { pid: 29, ppid: 28, comm: 'bash' },
+      { pid: 28, ppid: 20, comm: 'copilot' },
+      { pid: 20, ppid: 1, comm: 'claude' },
+    ]);
+    const r = resolveIdentity({ psTable: ps, startPid: 30, env: {} });
+    assert.equal(r.agent_family, 'copilot');
+    assert.equal(r.confidence, 'medium');
     assert.ok(r.signals.some((s) => s.value === 'claude'));
   });
 });

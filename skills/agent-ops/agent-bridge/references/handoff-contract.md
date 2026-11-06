@@ -144,3 +144,20 @@ Before `new`, if another **active** brief (`assigned|running|blocked|submitted`)
 When the CLI's data root (`--root` / `ROOT`) is **inside** the contract's `worktree` (or is the same directory), `bridge-handoff` passes `buildVerificationReport` a contract **derived in memory only** whose `allowed_files` includes the globs of the handoff's own state (`data/briefs/**`, `data/bridge/**`, `data/logs/**`, prefixed if `ROOT` is a subdirectory of the worktree). Those paths do not count as a scope violation; the JSON report carries `state_paths_ignored` with the list of applied globs. If `ROOT` is outside the worktree, the contract is not altered for verification.
 
 Errors when **creating** a lock: only `EEXIST` → exit **4** `lock_busy` (owner of the file). Any other `errno` in `openSync`/`writeFileSync` of the lock → exit **2** `lock_io` with `errno`, `path` and message (e.g. «no write permission in &lt;dir&gt;»).
+
+### `repo_scope`, `baseline_untracked` and atomic writes
+
+B extensions, additional fields:
+
+| Field | Use |
+|---|---|
+| `repo_scope` | Optional `"local"` (default when absent) or `"none"`. `"none"` explicitly declares that repository changes are outside the evidence scope. It can be supplied to `new --input`, including retry/round. Do not infer this opt-out from an execution token or observed identity. |
+| `baseline_untracked` | Optional array of untracked file paths captured with the actual `baseline_head` at the original local `new` of each `task_id` (root or child); retry/round inherit both fields unchanged and input cannot supply or override this snapshot. If a task starts with `repo_scope: "none"`, its `baseline_head` is empty and its untracked snapshot is absent. The first transition from none to local without a prior baseline captures both fields before acquiring mutation locks; later executions preserve that baseline, including across local/none/local scope changes. Paths ending in `.lock` are never included in a captured snapshot. Paths still untracked and present in this array do not count as repository changes. Tracked or staged changes continue to count. If absent in an older brief, all current untracked paths continue to count. |
+
+Verification tied to revision (D6), addition:
+
+> With `repo_scope: "none"`, verification skips Git inspection, repository scope violations and the repository `requires_changes`/noop check. It still requires `submitted`, valid limits, readable non-directory expected artifacts and successful defined required checks executed with `--run-checks`. Artifacts are resolved relative to the supplied worktree (which may be a non-Git artifact directory); their current content is hashed, without comparing it with a Git baseline. This mode does not attest that an artifact was newly created. The JSON report retains `verification_verdict: "evidence_ok"` for compatibility, and explicitly includes `repo_scope: "none"`, `git.skipped: true`, `git.skip_reason: "repo_scope=none"` and `verification_note: "evidence_ok (repo_scope=none)"`; text output displays that note. Handoff stores the skip in `verification` and its confirmed result. Identity, execution-token permissions, independent verification, revision and acceptance rules still apply. The coordinator state root used by `bridge-handoff` remains a Git repository for ownership; this option only disables repository evidence inspection.
+
+Atomic write rule, addition:
+
+> Before renaming a temporary brief or JSON/JSONL state file, re-read its content, require exact equality with the intended serialized content (including length), and parse it; reject a mismatch (including truncation to empty), invalid serialization or a failed re-read and remove the temporary without replacing the prior destination. Journal read/write/repair failures return controlled exit 2 with `journal_write_failed`; pending effects remain recoverable by reconcile/replay. Briefs must also pass contract validation. Exclusive lock files retain `open(wx)` and are re-read/parsed before acquisition succeeds; invalid lock writes are cleaned up. Daily logs and `.corrupt-*` forensic copies are not JSON state.

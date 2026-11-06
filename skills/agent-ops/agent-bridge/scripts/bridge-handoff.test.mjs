@@ -18,7 +18,9 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { resolveIdentity } from './bridge-whoami';
-import { extractContractJson, validateContract } from './bridge-verify';
+import { buildVerificationReport, extractContractJson, listChangedFiles, validateContract, writeAtomic } from './bridge-verify';
+import { writeAtomicDurable } from './bridge-handoff-durable.mjs';
+import { buildLogLine } from './bridge-handoff-journal.mjs';
 import {
   handoffNew,
   handoffStatusSet,
@@ -106,6 +108,195 @@ function writeInput(dir, data) {
   writeFileSync(p, JSON.stringify(data));
   return p;
 }
+
+describe('Remote headless delegation regressions', () => {
+  function create(overrides = {}, before = () => {}) {
+    const { dir, base } = initRepo();
+    before(dir);
+    const n = handoffNew({ root: dir,
+      inputPath: writeInput(dir, { ...inputPayload(dir, base, OTHER, []), ...overrides }),
+      requestId: randomUUID(), identity: id(COORD, 'coord', 10) });
+    return { dir, base, n };
+  }
+
+  it('checks survive new and repeated brief writes with ANSI-C quotes, double quotes, backslashes and newlines', () => {
+    const cmd = `printf $'a\\nb' "quoted" \\path\n# $& $\x60 $'`;
+    const { dir, n } = create({ required_checks: [{ cmd }] });
+    try {
+      assert.equal(n.ok, true);
+      const file = join(dir, 'data', 'briefs', `${n.contract.task_id}.md`);
+      assert.equal(loadBriefFile(file).contract.required_checks[0].cmd, cmd);
+      const running = handoffStatusSet({ root: dir, taskId: n.contract.task_id,
+        state: 'running', expectRevision: 1, requestId: randomUUID(), identity: id(OTHER) });
+      assert.equal(running.ok, true, JSON.stringify(running));
+      assert.equal(loadBriefFile(file).contract.required_checks[0].cmd, cmd);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('rejects invalid serialized data before replacing an existing brief or JSON state', () => {
+    const { dir, n } = create();
+    try {
+      assert.equal(n.ok, true);
+      const file = join(dir, 'data', 'briefs', `${n.contract.task_id}.md`);
+      const before = readFileSync(file, 'utf8');
+      const bad = writeBriefAtomic(file, before, { ...n.contract, schema_version: 2 });
+      assert.equal(bad.error, 'invalid_serialized_brief');
+      assert.equal(readFileSync(file, 'utf8'), before);
+      for (const writer of [writeAtomic, writeAtomicDurable]) {
+        const target = join(dir, 'state.json');
+        writeFileSync(target, '{"before":true}');
+        assert.throws(() => writer(target, '{broken'), /JSON|json/);
+        assert.equal(readFileSync(target, 'utf8'), '{"before":true}');
+        assert.equal(readdirSync(dir).some((p) => p.startsWith('.state.json.tmp')), false);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('rereads a corrupted temporary from disk and preserves the old state', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bridge-corrupt-write-'));
+    try {
+      const harness = `
+import assert from 'node:assert/strict';
+import { mock } from 'node:test';
+const fs = await import('node:fs');
+const dir = ${JSON.stringify(dir)};
+const target = dir + '/state.json';
+fs.writeFileSync(target, '{"before":true}');
+mock.module('node:fs', { namedExports: {
+  closeSync: fs.closeSync, fsyncSync: fs.fsyncSync, openSync: fs.openSync,
+  readFileSync: fs.readFileSync, renameSync: fs.renameSync, unlinkSync: fs.unlinkSync,
+  writeFileSync(fd) { fs.writeFileSync(fd, '{truncated'); }
+} });
+const { writeAtomicDurable } = await import(${JSON.stringify(new URL('./bridge-handoff-durable.mjs', import.meta.url).href)});
+assert.throws(() => writeAtomicDurable(target, '{"after":true}'), /serialized_content_mismatch|JSON|json/);
+assert.equal(fs.readFileSync(target, 'utf8'), '{"before":true}');
+assert.deepEqual(fs.readdirSync(dir), ['state.json']);
+`;
+      const result = spawnSync(process.execPath,
+        ['--experimental-test-module-mocks', '--input-type=module', '-e', harness], { encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  for (const depth of [undefined, 0, 1, 2, -1, 3, 1.5, '1', null]) {
+    it(`validates and preserves input delegation_depth=${JSON.stringify(depth)}`, () => {
+      const { dir, n } = create(depth === undefined ? {} : { delegation_depth: depth });
+      try {
+        if (depth === undefined || [0, 1, 2].includes(depth)) {
+          assert.equal(n.ok, true, JSON.stringify(n));
+          assert.equal(n.contract.delegation_depth, depth ?? 0);
+          assert.equal(handoffShow({ root: dir, taskId: n.contract.task_id }).contract.delegation_depth, depth ?? 0);
+        } else {
+          assert.equal(n.ok, false); assert.equal(n.exit, 3);
+          assert.equal(n.error, 'invalid_delegation_depth');
+        }
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+
+  it('snapshots HEAD and untracked names at new; ignores only preexisting untracked files', () => {
+    const old = ['nohup.out', 'package.json', 'name with space.txt', 'line\nbreak.txt'];
+    const { dir, base, n } = create({ baseline_head: 'stale-input-head' }, (dir) => {
+      for (const p of old) writeFileSync(join(dir, p), 'preexisting');
+    });
+    try {
+      assert.equal(n.ok, true);
+      assert.equal(n.contract.baseline_head, base);
+      for (const p of old) assert.ok(n.contract.baseline_untracked.includes(p));
+      const contract = { ...n.contract, status: 'submitted', allowed_files: ['data/**'] };
+      const inspect = (c = contract) => buildVerificationReport({ contract: c, worktree: dir,
+        runChecks: true, checkResults: [{ exit: 0 }] });
+      assert.equal(inspect().verification_verdict, 'evidence_ok');
+      // Legacy contracts retain strict behavior: they have no recorded snapshot.
+      const { baseline_untracked, ...legacy } = contract;
+      assert.equal(inspect(legacy).verification_verdict, 'evidence_failed');
+      writeFileSync(join(dir, 'new.txt'), 'new');
+      writeFileSync(join(dir, 'README.md'), 'tracked change');
+      const bad = inspect();
+      assert.deepEqual(bad.scope_violations.map((v) => v.path), ['README.md', 'new.txt']);
+      spawnSync('git', ['add', 'package.json'], { cwd: dir });
+      assert.ok(inspect().scope_violations.some((v) => v.path === 'package.json'));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('repo_scope=none skips Git, still checks artifacts/checks, and verifies token submission end to end', () => {
+    const { dir, n } = create({ repo_scope: 'none', requires_changes: true,
+      expected_artifacts: ['REPORT.md'] });
+    try {
+      assert.equal(n.ok, true);
+      assert.equal(n.contract.repo_scope, 'none');
+      const contract = { ...n.contract, status: 'submitted', baseline_head: 'not-a-git-sha' };
+      const inspect = (checks = [{ exit: 0 }]) => buildVerificationReport({ contract, worktree: dir,
+        runChecks: true, checkResults: checks });
+      assert.equal(inspect().verification_verdict, 'evidence_failed');
+      writeFileSync(join(dir, 'REPORT.md'), 'remote report');
+      const good = inspect();
+      assert.equal(good.verification_verdict, 'evidence_ok');
+      assert.equal(good.verification_note, 'evidence_ok (repo_scope=none)');
+      assert.equal(good.git.skipped, true);
+      assert.equal(inspect([{ exit: 1 }]).verification_verdict, 'evidence_failed');
+      const running = handoffStatusSet({ root: dir, taskId: n.contract.task_id,
+        state: 'running', expectRevision: 1, requestId: randomUUID(), identity: id('unknown', null, 20),
+        executionToken: n.result.execution_token });
+      assert.equal(running.ok, true, JSON.stringify(running));
+      const done = handoffDone({ root: dir, taskId: n.contract.task_id,
+        resultPath: join(dir, 'REPORT.md'), expectRevision: 2, requestId: randomUUID(),
+        identity: id('unknown', null, 20), executionToken: n.result.execution_token });
+      assert.equal(done.ok, true, JSON.stringify(done));
+      const briefFile = join(dir, 'data', 'briefs', `${n.contract.task_id}.md`);
+      const outFile = join(dir, 'evidence.json');
+      for (const format of ['--json', '--text']) {
+        const cli = spawnSync(process.execPath, [join(SCRIPTS_DIR, 'bridge-verify'), '--worktree', dir,
+          '--brief', briefFile, '--run-checks', '--out', outFile, format], { encoding: 'utf8' });
+        assert.equal(cli.status, 0, cli.stderr || cli.stdout);
+        assert.match(cli.stdout, /evidence_ok \(repo_scope=none\)/);
+        assert.equal(JSON.parse(readFileSync(outFile, 'utf8')).git.skipped, true);
+      }
+      const verified = handoffStatusSet({ root: dir, taskId: n.contract.task_id,
+        state: 'verified', runChecks: true, expectRevision: 3, requestId: randomUUID(),
+        identity: id(COORD, 'verifier', 30) });
+      assert.equal(verified.ok, true, JSON.stringify(verified));
+      assert.equal(verified.result.verification_note, 'evidence_ok (repo_scope=none)');
+      assert.equal(verified.contract.verification.note, 'evidence_ok (repo_scope=none)');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('repo_scope=none supports artifact directories outside Git and still rejects missing checks', () => {
+    const { dir, n } = create({ repo_scope: 'none', expected_artifacts: ['REPORT.md'] });
+    const artifacts = mkdtempSync(join(tmpdir(), 'bridge-remote-artifacts-'));
+    try {
+      writeFileSync(join(artifacts, 'REPORT.md'), 'copied from remote executor');
+      const contract = { ...n.contract, status: 'submitted' };
+      const inspect = (c = contract, runChecks = true) => buildVerificationReport({
+        contract: c, worktree: artifacts, runChecks, checkResults: [{ exit: 0 }] });
+      assert.equal(inspect().verification_verdict, 'evidence_ok');
+      assert.equal(inspect(contract, false).verification_verdict, 'unverified');
+      assert.equal(inspect({ ...contract, required_checks: [] }).verification_verdict, 'unverified');
+      rmSync(join(artifacts, 'REPORT.md'));
+      mkdirSync(join(artifacts, 'REPORT.md'));
+      assert.equal(inspect().verification_verdict, 'evidence_failed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(artifacts, { recursive: true, force: true });
+    }
+  });
+
+  it('repo_scope rejects typos instead of silently disabling evidence', () => {
+    const { dir, n } = create({ repo_scope: 'remote' });
+    try {
+      assert.equal(n.ok, false); assert.equal(n.exit, 3);
+      assert.equal(n.error, 'invalid_repo_scope');
+    }
+    finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('terminal log uses declared executor; unknown is the unobserved model, not the family', () => {
+    const line = buildLogLine({ contract: { executor_agent: 'remote', execution_id: randomUUID(),
+      created_at: '2026-11-05T00:00:00Z', executor_context: { family: 'unknown' } },
+      toStatus: 'submitted', note: 'report', ts: '2026-11-05T00:01:00Z' });
+    assert.match(line, /^- remote · unknown · 1 min · entregado/);
+  });
+});
 
 describe('bridge-handoff', () => {
   it('01 contrato y ciclo normal new→running→done→verified→accepted con independence correcto', () => {
@@ -996,7 +1187,7 @@ describe('bridge-handoff', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('17 B2: plaintext token no aparece en brief ni journal', () => {
+  it('17 B2: token en claro no aparece en brief ni journal', () => {
     const { dir, base } = initRepo();
     const n = handoffNew({
       root: dir,
@@ -1371,7 +1562,7 @@ describe('bridge-handoff', () => {
       expectRevision: 1,
       requestId: randomUUID(),
       note: 'go',
-      identity: id(OTHER, 'example-host', 21),
+      identity: id(OTHER, 'e2', 21),
     });
     const shB = handoffShow({ root: dir2, taskId: taskId2 });
     writeFileSync(join(dir2, 'entrega.txt'), 'ok\n');
@@ -1383,7 +1574,7 @@ describe('bridge-handoff', () => {
       note: 'd',
       expectRevision: shB.contract.revision,
       requestId: randomUUID(),
-      identity: id(OTHER, 'example-host', 21),
+      identity: id(OTHER, 'e2', 21),
     });
     const shB2 = handoffShow({ root: dir2, taskId: taskId2 });
     const vBad = handoffStatusSet({
@@ -1502,9 +1693,11 @@ import { existsSync } from 'node:fs';
 import { mock } from 'node:test';
 const realFs = await import('node:fs');
 mock.module('node:fs', {
-  defaultExport: realFs.default,
   namedExports: {
-    ...realFs,
+    closeSync: realFs.closeSync,
+    openSync: realFs.openSync,
+    readFileSync: realFs.readFileSync,
+    unlinkSync: realFs.unlinkSync,
     writeFileSync(fd, data, enc) {
       if (typeof fd === 'number') {
         const err = new Error('no space left');
@@ -1545,7 +1738,7 @@ assert.equal(existsSync(lockPath), false);
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('28 B6 case-one: ejecutor con token mismo host/pid no puede verified/accepted', () => {
+  it('28 B6 A1: ejecutor con token mismo host/pid no puede verified/accepted', () => {
     const sharedPid = 4242;
     const { dir, base } = initRepo();
     const n = handoffNew({
@@ -2007,8 +2200,7 @@ function patchBriefJson(contract) {
 
 // D4: real CLI regression; every invocation uses this copy and this Node.
 describe('D4 CLI token regressions', () => {
-  function setupCli() {
-    assert.notEqual(LIVE.agent_family, 'unknown', 'new requires observed coordinator identity');
+  function setupCli(t) {
     const { dir, base } = initRepo();
     const env = { ...process.env };
     delete env.BRIDGE_EXECUTION_TOKEN;
@@ -2017,9 +2209,19 @@ describe('D4 CLI token regressions', () => {
       { cwd: dir, env: { ...env, ...extraEnv }, encoding: 'utf8' },
     );
     const input = writeInput(dir, inputPayload(dir, base, OTHER));
-    const n = cli(['new', '--input', input, '--request-id', randomUUID()]);
-    assert.equal(n.status, 0, n.stderr || n.stdout);
-    const created = JSON.parse(n.stdout);
+    let created;
+    if (LIVE.agent_family === 'unknown') {
+      // new forbids unknown coordinators; token-authorized status/done still work.
+      // Seed only the fixture through the library; never override CLI identity.
+      t.diagnostic('unknown host identity: new fixture via library; status/done via real CLI');
+      const n = handoffNew({ root: dir, inputPath: input, requestId: randomUUID(), identity: id(COORD) });
+      assert.equal(n.ok, true, JSON.stringify(n));
+      created = n.result;
+    } else {
+      const n = cli(['new', '--input', input, '--request-id', randomUUID()]);
+      assert.equal(n.status, 0, n.stderr || n.stdout);
+      created = JSON.parse(n.stdout);
+    }
     assert.equal(created.status, 'assigned');
     assert.ok(created.execution_token);
     const result = join(dir, 'result.txt');
@@ -2028,8 +2230,8 @@ describe('D4 CLI token regressions', () => {
   }
 
   for (const mode of ['flag', 'env']) {
-    it(`D4 real new→running→submitted using token ${mode}`, () => {
-      const { dir, cli, created, result } = setupCli();
+    it(`D4 real new→running→submitted using token ${mode}`, (t) => {
+      const { dir, cli, created, result } = setupCli(t);
       try {
         const authArgs = mode === 'flag' ? ['--token', created.execution_token] : [];
         const authEnv = mode === 'env' ? { BRIDGE_EXECUTION_TOKEN: created.execution_token } : {};
@@ -2054,8 +2256,8 @@ describe('D4 CLI token regressions', () => {
     });
   }
 
-  it('D4 status/done reject --token without value even with valid env token', () => {
-    const { dir, cli, created, result } = setupCli();
+  it('D4 status/done reject --token without value even with valid env token', (t) => {
+    const { dir, cli, created, result } = setupCli(t);
     try {
       const commands = [
         ['status', created.task_id, '--set', 'running', '--expect-revision', '1',
@@ -2085,4 +2287,235 @@ describe('D4 CLI token regressions', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+// Ronda 2: preserve task evidence across executions and fail journal I/O closed.
+describe('Round 2 review regressions', () => {
+  function create(overrides = {}, before = () => {}) {
+    const { dir, base } = initRepo();
+    before(dir);
+    const input = { ...inputPayload(dir, base, OTHER, []), ...overrides };
+    const n = handoffNew({ root: dir, inputPath: writeInput(dir, input),
+      requestId: randomUUID(), identity: id(COORD) });
+    assert.equal(n.ok, true, JSON.stringify(n));
+    return { dir, base, input, n };
+  }
+  function running(dir, n) {
+    const r = handoffStatusSet({ root: dir, taskId: n.contract.task_id, state: 'running',
+      expectRevision: n.contract.revision, requestId: randomUUID(), identity: id(OTHER) });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    return r;
+  }
+
+  for (const mode of ['round', 'retry']) {
+    it(`${mode} preserves depth, original HEAD/untracked and prior forbidden violations despite input injection`, () => {
+      const { dir, base, input, n } = create({ delegation_depth: 1,
+        forbidden_files: ['secret.txt'], expected_artifacts: ['REPORT.md'] },
+      (dir) => writeFileSync(join(dir, 'preexisting.txt'), 'before new'));
+      try {
+        const initialUntracked = [...n.contract.baseline_untracked];
+        assert.ok(initialUntracked.includes('preexisting.txt'));
+        assert.equal(initialUntracked.some((p) => p.endsWith('.lock')), false);
+        const run = running(dir, n);
+        writeFileSync(join(dir, 'secret.txt'), 'forbidden change from first execution');
+        writeFileSync(join(dir, 'REPORT.md'), 'first execution artifact');
+        // A committed artifact must still be compared with the task's original HEAD.
+        for (const args of [['add', 'REPORT.md'], ['commit', '-m', 'fixture artifact']]) {
+          const git = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+          assert.equal(git.status, 0, git.stderr);
+        }
+        const end = mode === 'round'
+          ? handoffDone({ root: dir, taskId: n.contract.task_id, resultPath: join(dir, 'REPORT.md'),
+            expectRevision: run.contract.revision, requestId: randomUUID(), identity: id(OTHER) })
+          : handoffStatusSet({ root: dir, taskId: n.contract.task_id, state: 'failed',
+            expectRevision: run.contract.revision, requestId: randomUUID(), identity: id(OTHER) });
+        assert.equal(end.ok, true, JSON.stringify(end));
+        const inspect = (c) => buildVerificationReport({ contract: { ...c, status: 'submitted', allowed_files: ['**'] },
+          worktree: dir, runChecks: true, checkResults: [{ exit: 0 }] });
+        assert.deepEqual(inspect(end.contract).scope_violations, [{ path: 'secret.txt', reason: 'forbidden' }]);
+        const inputPath = writeInput(dir, { ...input, delegation_depth: 0,
+          baseline_head: 'injected-head', baseline_untracked: ['secret.txt'] });
+        const next = handoffNew({ root: dir, inputPath, requestId: randomUUID(),
+          identity: id(COORD), expectRevision: end.contract.revision,
+          ...(mode === 'round' ? { roundTaskId: n.contract.task_id } : { retryTaskId: n.contract.task_id }) });
+        assert.equal(next.ok, true, JSON.stringify(next));
+        assert.equal(next.contract.delegation_depth, 1);
+        assert.equal(next.contract.baseline_head, base);
+        assert.deepEqual(next.contract.baseline_untracked, initialUntracked);
+        assert.equal(next.contract.baseline_untracked.some((p) => p.endsWith('.lock')), false);
+        const evidence = inspect(next.contract);
+        assert.equal(evidence.verification_verdict, 'evidence_failed');
+        assert.deepEqual(evidence.scope_violations, [{ path: 'secret.txt', reason: 'forbidden' }]);
+        assert.equal(evidence.artifacts[0].state, 'delivered');
+        const stored = handoffShow({ root: dir, taskId: n.contract.task_id }).contract;
+        assert.equal(stored.delegation_depth, 1);
+        assert.deepEqual(stored.baseline_untracked, initialUntracked);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+
+  it('new ignores injected baseline_untracked; lock paths never enter a snapshot', () => {
+    const { dir, base, n } = create({ baseline_untracked: ['new.txt'] }, (dir) => {
+      writeFileSync(join(dir, 'foreign.lock'), 'not a baseline exception');
+    });
+    try {
+      assert.equal(n.contract.baseline_untracked.includes('new.txt'), false);
+      assert.equal(n.contract.baseline_untracked.includes('foreign.lock'), false);
+      writeFileSync(join(dir, 'new.txt'), 'created after new');
+      const files = listChangedFiles(dir, base, n.contract.baseline_untracked);
+      assert.equal(files.ok, true);
+      assert.ok(files.changed_files.includes('new.txt'));
+      assert.ok(files.changed_files.includes('foreign.lock'));
+      assert.equal(files.changed_files.includes('input.json'), false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('none→local captures once outside locks; later retry inherits that snapshot', () => {
+    const { dir, base, input, n } = create({ repo_scope: 'none', baseline_head: '' });
+    try {
+      const run = running(dir, n);
+      const failed = handoffStatusSet({ root: dir, taskId: n.contract.task_id, state: 'failed',
+        expectRevision: run.contract.revision, requestId: randomUUID(), identity: id(OTHER) });
+      assert.equal(failed.ok, true);
+      writeFileSync(join(dir, 'before-local.txt'), 'before first local baseline');
+      const localInput = writeInput(dir, { ...input, repo_scope: 'local' });
+      const local = handoffNew({ root: dir, inputPath: localInput, retryTaskId: n.contract.task_id,
+        expectRevision: failed.contract.revision, requestId: randomUUID(), identity: id(COORD) });
+      assert.equal(local.ok, true, JSON.stringify(local));
+      assert.equal(local.contract.baseline_head, base);
+      assert.ok(local.contract.baseline_untracked.includes('before-local.txt'));
+      assert.equal(local.contract.baseline_untracked.some((p) => p.endsWith('.lock')), false);
+      const localRun = running(dir, local);
+      const failedAgain = handoffStatusSet({ root: dir, taskId: n.contract.task_id, state: 'failed',
+        expectRevision: localRun.contract.revision, requestId: randomUUID(), identity: id(OTHER) });
+      assert.equal(failedAgain.ok, true);
+      writeFileSync(join(dir, 'after-local.txt'), 'must remain a change');
+      const retried = handoffNew({ root: dir, inputPath: localInput, retryTaskId: n.contract.task_id,
+        expectRevision: failedAgain.contract.revision, requestId: randomUUID(), identity: id(COORD) });
+      assert.equal(retried.ok, true, JSON.stringify(retried));
+      assert.deepEqual(retried.contract.baseline_untracked, local.contract.baseline_untracked);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('fences in cmd/objective/note round-trip through repeated writes, including CRLF Markdown', () => {
+    const cmd = "grep '```' REPORT.md\nprintf '```json\\n'";
+    const objective = 'Find ``` fences\nand keep this string';
+    const { dir, n } = create({ objective, required_checks: [{ cmd }] });
+    try {
+      const file = join(dir, 'data', 'briefs', `${n.contract.task_id}.md`);
+      const contract = { ...n.contract, note: '```json\n{"nested":true}\n```\nnext' };
+      for (const newline of ['\n', '\r\n']) {
+        const markdown = readFileSync(file, 'utf8').replace(/\r?\n/g, newline);
+        const result = writeBriefAtomic(file, markdown, contract);
+        assert.equal(result.ok, true, JSON.stringify(result));
+        const loaded = loadBriefFile(file);
+        assert.equal(loaded.error, undefined);
+        assert.equal(loaded.contract.required_checks[0].cmd, cmd);
+        assert.equal(loaded.contract.objective, objective);
+        assert.equal(loaded.contract.note, contract.note);
+        assert.equal((readFileSync(file, 'utf8').match(/^```json/gm) || []).length, 1);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('depth over budget in an existing brief reaches evidence_failed/exit 1 like other counters', () => {
+    const { dir, n } = create({ allowed_files: ['**'] });
+    try {
+      const contract = { ...n.contract, status: 'submitted', delegation_depth: 3 };
+      assert.equal(validateContract(contract).ok, true);
+      const file = join(dir, 'data', 'briefs', `${n.contract.task_id}.md`);
+      assert.equal(writeBriefAtomic(file, readFileSync(file, 'utf8'), contract).ok, true);
+      const cli = spawnSync(process.execPath, [join(SCRIPTS_DIR, 'bridge-verify'),
+        '--worktree', dir, '--brief', file, '--run-checks'], { encoding: 'utf8' });
+      assert.equal(cli.status, 1, cli.stderr || cli.stdout);
+      const report = JSON.parse(cli.stdout);
+      assert.equal(report.verification_verdict, 'evidence_failed');
+      assert.deepEqual(report.limit_violations, [{ field: 'delegation_depth', value: 3, max: 2 }]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('journal directory read returns controlled exit 2 in library and real CLI; reconcile recovers pending effect', () => {
+    const { dir, input, n } = create();
+    try {
+      const events = eventsPath(dir);
+      const original = readFileSync(events, 'utf8');
+      rmSync(events);
+      mkdirSync(events);
+      const failedNew = handoffNew({ root: dir, inputPath: writeInput(dir, input),
+        requestId: randomUUID(), identity: id(COORD) });
+      assert.equal(failedNew.exit, 2);
+      assert.equal(failedNew.error, 'journal_write_failed');
+      const cli = spawnSync(process.execPath, [BRIDGE_HANDOFF_CLI, 'status', n.contract.task_id,
+        '--set', 'running', '--expect-revision', '1', '--request-id', randomUUID(),
+        '--token', n.result.execution_token, '--root', dir], { encoding: 'utf8' });
+      assert.equal(cli.status, 2, cli.stderr || cli.stdout);
+      assert.match(cli.stderr, /journal_write_failed/);
+      const pending = handoffShow({ root: dir, taskId: n.contract.task_id }).contract;
+      assert.equal(pending.last_effect.pending, true);
+      assert.equal(existsSync(join(dir, 'data', 'bridge', 'journal.lock')), false);
+      assert.equal(existsSync(join(dir, 'data', 'briefs', `${n.contract.task_id}.md.lock`)), false);
+      rmSync(events, { recursive: true });
+      writeFileSync(events, original);
+      const recovered = handoffReconcile({ root: dir, taskId: n.contract.task_id,
+        expectRevision: pending.revision, requestId: randomUUID(), identity: id(COORD) });
+      assert.equal(recovered.ok, true, JSON.stringify(recovered));
+      assert.equal(handoffShow({ root: dir, taskId: n.contract.task_id }).contract.last_effect.pending, false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  for (const mode of ['empty', 'corrupt', 'read-error', 'repair-corrupt']) {
+    it(`journal ${mode} fault is controlled, preserves original bytes and recovers on replay`, () => {
+      const { dir, input } = create();
+      try {
+        const harness = `
+import assert from 'node:assert/strict';
+import { mock } from 'node:test';
+import { randomUUID } from 'node:crypto';
+const fs = await import('node:fs');
+const dir = ${JSON.stringify(dir)};
+const mode = ${JSON.stringify(mode)};
+const events = dir + '/data/bridge/events.jsonl';
+if (mode === 'repair-corrupt') fs.appendFileSync(events, '{bad-tail');
+const before = fs.readFileSync(events, 'utf8');
+const targets = new Map();
+let enabled = true;
+const named = Object.fromEntries(Object.entries(fs).filter(([k]) => !['default','constants','promises'].includes(k)));
+mock.module('node:fs', { namedExports: { ...named,
+  openSync(file, ...args) {
+    const fd = fs.openSync(file, ...args); targets.set(fd, String(file)); return fd;
+  },
+  writeFileSync(file, data, ...args) {
+    if (enabled && mode !== 'read-error' && (targets.get(file) || String(file)).includes('.events.jsonl.tmp.')) {
+      return fs.writeFileSync(file, mode === 'empty' ? '' : '{corrupt_journal_line', ...args);
+    }
+    return fs.writeFileSync(file, data, ...args);
+  },
+  readFileSync(file, ...args) {
+    if (enabled && mode === 'read-error' && String(file).includes('.events.jsonl.tmp.')) {
+      const error = new Error('injected journal read'); error.code = 'EIO'; throw error;
+    }
+    return fs.readFileSync(file, ...args);
+  }
+} });
+const { handoffNew } = await import(${JSON.stringify(new URL('./bridge-handoff-lib.mjs', import.meta.url).href)});
+const options = { root: dir, inputPath: dir + '/input.json', requestId: randomUUID(), identity: ${JSON.stringify(id(COORD))} };
+const failed = handoffNew(options);
+assert.equal(failed.ok, false);
+assert.equal(failed.exit, 2);
+assert.equal(failed.error, 'journal_write_failed');
+assert.equal(fs.readFileSync(events, 'utf8'), before);
+assert.equal(fs.existsSync(dir + '/data/bridge/journal.lock'), false);
+assert.equal(fs.readdirSync(dir + '/data/bridge').some(p => p.includes('.tmp.')), false);
+enabled = false;
+const recovered = handoffNew(options);
+assert.equal(recovered.ok, true, JSON.stringify(recovered));
+for (const line of fs.readFileSync(events,'utf8').trim().split('\\n')) JSON.parse(line);
+`;
+        writeInput(dir, { ...input, objective: 'second task without overlapping ownership' });
+        const result = spawnSync(process.execPath,
+          ['--experimental-test-module-mocks', '--input-type=module', '-e', harness], { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
 });

@@ -5,8 +5,13 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { eventsPath } from './bridge-handoff-paths.mjs';
+import { writeAtomicDurable } from './bridge-handoff-durable.mjs';
 
 const TZ = 'America/Puerto_Rico';
+
+function validateJsonLines(text) {
+  for (const line of text.split('\n')) if (line.trim()) JSON.parse(line);
+}
 
 export function computeEventId({ task_id, execution_id, from, to, revision }) {
   const raw = `${task_id}|${execution_id}|${from}|${to}|${revision}`;
@@ -48,7 +53,7 @@ export function repairJournalTail(eventsFile) {
   if (rebuilt === original) return { repaired: false };
   const corruptPath = `${eventsFile}.corrupt-${Date.now()}`;
   writeFileSync(corruptPath, original);
-  writeFileSync(eventsFile, rebuilt);
+  writeAtomicDurable(eventsFile, rebuilt, validateJsonLines);
   return { repaired: true, corruptPath };
 }
 
@@ -91,7 +96,8 @@ export function appendEvent(eventsFile, event) {
   mkdirSync(dirname(eventsFile), { recursive: true });
   repairJournalTail(eventsFile);
   const line = `${JSON.stringify(event)}\n`;
-  appendFileSync(eventsFile, line, 'utf8');
+  const previous = existsSync(eventsFile) ? readFileSync(eventsFile, 'utf8') : '';
+  writeAtomicDurable(eventsFile, `${previous}${line}`, validateJsonLines);
 }
 
 /** Escapa nota para una sola línea de log. */
