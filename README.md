@@ -20,17 +20,21 @@ These skills are free and open source (MIT). If they save you time, [**become a 
 
 Open your coding agent (Claude Code, Codex, Cursor, OpenCode, Gemini CLI) in any
 folder and paste this. It installs every skill in this repo for the agents you
-actually use, verifies them and tells you what it did:
+actually use, adds the operating rules, the `skill-find` command and the prompt
+hooks (Claude Code and Codex), verifies everything and tells you what it did:
 
 ```text
 Install all the skills from https://github.com/MondoBoricua/agent-forge-skills on
 this machine. Clone the repo into a temporary folder, read its README.md, and
-follow the "Agent Install Prompt" section exactly. Detect which agents I use
-(Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Antigravity) by checking
-their binaries and config folders, and install only for those. Never overwrite
-an existing skill without a timestamped backup, never copy .git or any
-credentials, and do not send my files anywhere. Finish with a list of the
-installed skill paths and anything you skipped and why.
+follow the "Agent Install Prompt" section exactly, then the "Agent Ops Starter
+Kit Install Prompt" section (skill-find command, operating rules, and the prompt
+hooks for Claude Code and Codex). Detect which agents I use (Claude Code, Codex,
+Cursor, OpenCode, Gemini CLI, Antigravity) by checking their binaries and config
+folders, and install only for those. Never overwrite an existing skill or
+settings file without a timestamped backup, never copy .git or any credentials,
+and do not send my files anywhere. Finish with a list of the installed skill
+paths, the rules and hooks you added, anything you skipped and why, and remind
+me to run /hooks once in Codex if you added hooks there.
 ```
 
 The same prompt in Spanish:
@@ -38,17 +42,21 @@ The same prompt in Spanish:
 ```text
 Instala todas las skills de https://github.com/MondoBoricua/agent-forge-skills
 en esta máquina. Clona el repo en una carpeta temporal, lee su README.md y sigue
-al pie de la letra la sección "Agent Install Prompt". Detecta qué agentes uso
-(Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Antigravity) mirando sus
-binarios y carpetas de configuración, e instala solo para esos. Nunca
-sobrescribas una skill existente sin backup con fecha, nunca copies .git ni
-credenciales, y no envíes mis archivos a ningún sitio. Termina con la lista de
-rutas instaladas y lo que saltaste y por qué.
+al pie de la letra la sección "Agent Install Prompt" y después la sección "Agent
+Ops Starter Kit Install Prompt" (comando skill-find, reglas de operación y los
+hooks de prompt para Claude Code y Codex). Detecta qué agentes uso (Claude Code,
+Codex, Cursor, OpenCode, Gemini CLI, Antigravity) mirando sus binarios y
+carpetas de configuración, e instala solo para esos. Nunca sobrescribas una
+skill ni un archivo de configuración existente sin backup con fecha, nunca
+copies .git ni credenciales, y no envíes mis archivos a ningún sitio. Termina
+con la lista de rutas instaladas, las reglas y hooks que añadiste, lo que
+saltaste y por qué, y recuérdame correr /hooks una vez en Codex si pusiste
+hooks ahí.
 ```
 
 Want only the four operating skills plus the `skill-find` command, rules and
-Claude hooks? Use the [Agent Ops Starter Kit Install Prompt](#agent-ops-starter-kit-install-prompt)
-instead. To pick skills by hand, see [Installation](#installation).
+hooks? Use the [Agent Ops Starter Kit Install Prompt](#agent-ops-starter-kit-install-prompt)
+alone. To pick skills by hand, see [Installation](#installation).
 
 ## Skills
 
