@@ -55,7 +55,18 @@ ln -s "$HOME/.agents/skills/agent-bridge/scripts/claude-auto" "$HOME/.local/bin/
 
 ## 2. Add operating rules
 
-Read [RULES.md](RULES.md), then paste the three rule sections into your `CLAUDE.md` or `AGENTS.md`. Keep any existing project constraints and resolve conflicts deliberately. Rules are instructions; hooks are selective reminders and do not enforce compliance.
+Read [RULES.md](RULES.md), then paste the three rule sections into the global rules file of **every** agent you use (each agent reads only its own file, and skill syncs do not carry them):
+
+| Agent | Global rules file |
+|---|---|
+| Claude Code | `~/.claude/CLAUDE.md` |
+| Codex CLI | `~/.codex/AGENTS.md` |
+| Gemini CLI / Antigravity | `~/.gemini/GEMINI.md` |
+| OpenCode | `~/.config/opencode/AGENTS.md` |
+| ZCode | `~/.zcode/AGENTS.md` |
+| Cursor | `~/.cursor/rules/<name>.mdc` with `alwaysApply: true` (Cursor reads `.cursor/rules` from the repo and every ancestor directory, so this applies to repos inside `$HOME` only) |
+
+Create the file if it does not exist. Keep any existing project constraints and resolve conflicts deliberately. Rules are instructions; hooks are selective reminders and do not enforce compliance.
 
 ## 3. Install Claude Code prompt hooks
 

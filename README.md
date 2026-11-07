@@ -220,11 +220,15 @@ Steps:
    files, secrets, tokens, credentials, hashes, or potfiles.
 8. If one destination is not used on this machine, skip it and say why.
 9. Append the three rule sections from `starter-kit/RULES.md` (verify before
-   asserting, delegate by default, search for a skill first) to my global rules
-   file for each agent I use: `~/.claude/CLAUDE.md` for Claude Code,
-   `~/.codex/AGENTS.md` for Codex, the global rules of Cursor or OpenCode
-   otherwise. Back up the file first and merge; never replace it or remove
-   existing rules. Skip a section that is already there.
+   asserting, delegate by default, search for a skill first) to the global
+   rules file of EVERY agent I use, one file per agent:
+   `~/.claude/CLAUDE.md` (Claude Code), `~/.codex/AGENTS.md` (Codex),
+   `~/.gemini/GEMINI.md` (Gemini CLI / Antigravity), `~/.config/opencode/AGENTS.md`
+   (OpenCode), `~/.zcode/AGENTS.md` (ZCode), `~/.cursor/rules/` (Cursor, as a
+   `.mdc` with `alwaysApply: true`). Create the file if it does not exist. Back
+   up the file first and merge; never replace it or remove existing rules. Skip
+   a section that is already there. Skill syncs do not carry these files, so
+   repeat this step on every machine.
 10. Verify each installed skill has a `SKILL.md` file and that
     `~/.agents/skills/verify-first/SKILL.md`, the path the rules point to, exists.
 11. Report the installed paths, symlink targets, the rules files you edited with
@@ -267,9 +271,12 @@ report every command you ran with its output.
    three commands under `UserPromptSubmit` (exact JSON in starter-kit/README.md,
    section "Codex CLI") and tell me to run `/hooks` once in the Codex TUI to
    trust them, because Codex skips untrusted hooks silently.
-6. Append the three rule sections from `starter-kit/RULES.md` to my global
-   `CLAUDE.md` (Claude Code), `AGENTS.md` (Codex/OpenCode) or Cursor rules,
-   whichever I use. Adapt the paths only if my skills live somewhere else.
+6. Append the three rule sections from `starter-kit/RULES.md` to the global
+   rules file of every agent I use, one per agent: `~/.claude/CLAUDE.md`,
+   `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.config/opencode/AGENTS.md`,
+   `~/.zcode/AGENTS.md`, `~/.cursor/rules/*.mdc`. Create missing files, back
+   up and merge existing ones. Adapt the paths only if my skills live somewhere
+   else.
 7. Verify: run `skill-find "docker compose"`; pipe the three sample prompts from
    starter-kit/README.md section 4 through each hook and show the JSON they
    print; run `node --test ./*.test.mjs` inside
