@@ -25,34 +25,52 @@ hooks (Claude Code and Codex), verifies everything and tells you what it did:
 
 ```text
 Install all the skills from https://github.com/MondoBoricua/agent-forge-skills on
-this machine. Clone the repo into a temporary folder, read its README.md, and
-follow the "Agent Install Prompt" section exactly, then the "Agent Ops Starter
-Kit Install Prompt" section (skill-find command, operating rules, and the prompt
-hooks for Claude Code and Codex). Detect which agents I use (Claude Code, Codex,
-Cursor, OpenCode, Gemini CLI, Antigravity) by checking their binaries and config
-folders, and install only for those. Never overwrite an existing skill or
-settings file without a timestamped backup, never copy .git or any credentials,
-and do not send my files anywhere. Finish with a list of the installed skill
-paths, the rules and hooks you added, anything you skipped and why, and remind
-me to run /hooks once in Codex if you added hooks there.
+this machine, in one run, without stopping to ask me anything: when a step has a
+safe default, take it and note it in the final report. Clone the repo into a
+temporary folder, read its README.md, and follow the "Agent Install Prompt"
+section exactly, then the "Agent Ops Starter Kit Install Prompt" section
+(skill-find command, operating rules, and the prompt hooks for Claude Code and
+Codex). Detect which agents I use (Claude Code, Codex, Cursor, OpenCode, Gemini
+CLI, Antigravity, ZCode) by checking their binaries and config folders, and
+install only for those. Append the three rule sections from starter-kit/RULES.md
+to the global rules file of EVERY agent you detected (CLAUDE.md, AGENTS.md,
+GEMINI.md, the OpenCode and ZCode AGENTS.md, Cursor rules), creating the file
+when it is missing. Never overwrite an existing skill or settings file without a
+timestamped backup, never copy .git or any credentials, and do not send my files
+anywhere. Finish with a list of the installed skill paths, the rules files and
+hooks you added, anything you skipped and why, and remind me to run /hooks once
+in Codex if you added hooks there.
 ```
+
+Add this sentence at the end if you also want the agents to run without
+permission prompts (the [YOLO station](starter-kit/YOLO.md)): `Then read
+starter-kit/YOLO.md and apply its prompt too.`
 
 The same prompt in Spanish:
 
 ```text
 Instala todas las skills de https://github.com/MondoBoricua/agent-forge-skills
-en esta máquina. Clona el repo en una carpeta temporal, lee su README.md y sigue
-al pie de la letra la sección "Agent Install Prompt" y después la sección "Agent
-Ops Starter Kit Install Prompt" (comando skill-find, reglas de operación y los
-hooks de prompt para Claude Code y Codex). Detecta qué agentes uso (Claude Code,
-Codex, Cursor, OpenCode, Gemini CLI, Antigravity) mirando sus binarios y
-carpetas de configuración, e instala solo para esos. Nunca sobrescribas una
+en esta máquina, de un tirón y sin pararte a preguntarme nada: si un paso tiene
+una opción segura por defecto, tómala y anótala en el reporte final. Clona el
+repo en una carpeta temporal, lee su README.md y sigue al pie de la letra la
+sección "Agent Install Prompt" y después la sección "Agent Ops Starter Kit
+Install Prompt" (comando skill-find, reglas de operación y los hooks de prompt
+para Claude Code y Codex). Detecta qué agentes uso (Claude Code, Codex, Cursor,
+OpenCode, Gemini CLI, Antigravity, ZCode) mirando sus binarios y carpetas de
+configuración, e instala solo para esos. Añade las tres secciones de reglas de
+starter-kit/RULES.md al archivo de reglas global de TODOS los agentes que
+detectes (CLAUDE.md, AGENTS.md, GEMINI.md, el AGENTS.md de OpenCode y de ZCode,
+reglas de Cursor), creando el archivo si no existe. Nunca sobrescribas una
 skill ni un archivo de configuración existente sin backup con fecha, nunca
 copies .git ni credenciales, y no envíes mis archivos a ningún sitio. Termina
-con la lista de rutas instaladas, las reglas y hooks que añadiste, lo que
-saltaste y por qué, y recuérdame correr /hooks una vez en Codex si pusiste
-hooks ahí.
+con la lista de rutas instaladas, los archivos de reglas y hooks que añadiste,
+lo que saltaste y por qué, y recuérdame correr /hooks una vez en Codex si
+pusiste hooks ahí.
 ```
+
+Si además quieres que los agentes corran sin pedir permisos (la
+[estación YOLO](starter-kit/YOLO.md)), añade al final: `Después lee
+starter-kit/YOLO.md y aplica también su prompt.`
 
 Want only the four operating skills plus the `skill-find` command, rules and
 hooks? Use the [Agent Ops Starter Kit Install Prompt](#agent-ops-starter-kit-install-prompt)
